@@ -2,35 +2,27 @@ using System.Collections;
 using UnityEngine;
 
 /// <summary>
-/// PlayerController — Fase 2: Movimiento WASD y power-up viento propio.
-///
-/// Adjuntar al GameObject del jugador LOCAL.
-/// Responsabilidades:
-///   - Leer input WASD / flechas y mover la cápsula.
-///   - Enviar la posición al servidor cada sendInterval segundos.
-///   - Al entrar en trigger con RunaObject, enviar collect_request.
-///   - Al pulsar E (o el botón de HUD), enviar powerup_activate viento_propio.
-///   - Recibir ApplySpeedBoost() desde GameManager cuando el servidor confirma.
+/// PlayerController — Fase 3.
+/// Cambios:
+///   - La tecla E ya no activa viento (se recoge del mapa).
+///   - La tecla Q envía powerup_activate "portal_propio".
+///   - ApplySpeedBoost sigue igual (lo llama GameManager cuando llega collect_confirm).
 /// </summary>
 [RequireComponent(typeof(CharacterController))]
 public class PlayerController : MonoBehaviour
 {
-    // ── Configuración ──────────────────────────────────────────────────────────
     [Header("Movimiento")]
-    [SerializeField] private float baseSpeed = 6f;
-    [SerializeField] private float speedBoostMul = 2f;    // multiplicador viento propio
-    [SerializeField] private float sendInterval = 0.05f; // 20 veces/seg
+    [SerializeField] private float baseSpeed = 8f;
+    [SerializeField] private float speedBoostMul = 2f;
+    [SerializeField] private float sendInterval = 0.05f;
 
-    // ── Propiedades públicas ───────────────────────────────────────────────────
     public string PlayerId { get; set; } = "";
 
-    // ── Estado interno ─────────────────────────────────────────────────────────
     private CharacterController _cc;
     private float _currentSpeed;
     private float _nextSendTime;
     private bool _boosted = false;
 
-    // ── Unity ──────────────────────────────────────────────────────────────────
     private void Awake()
     {
         _cc = GetComponent<CharacterController>();
@@ -39,80 +31,61 @@ public class PlayerController : MonoBehaviour
 
     private void Update()
     {
-        // ── Movimiento ─────────────────────────────────────────────────────────
-        float h = Input.GetAxisRaw("Horizontal");  // A/D o ←/→
-        float v = Input.GetAxisRaw("Vertical");    // W/S o ↑/↓
-
+        // Movimiento
+        float h = Input.GetAxisRaw("Horizontal");
+        float v = Input.GetAxisRaw("Vertical");
         Vector3 dir = new Vector3(h, 0f, v).normalized;
 
         if (dir.magnitude > 0.01f)
         {
-            // Rotar hacia la dirección de movimiento
             transform.rotation = Quaternion.Slerp(
                 transform.rotation,
                 Quaternion.LookRotation(dir),
                 Time.deltaTime * 12f);
-
             _cc.Move(dir * (_currentSpeed * Time.deltaTime));
         }
 
-        // Gravedad simple
         _cc.Move(Vector3.down * (9.81f * Time.deltaTime));
 
-        // ── Enviar posición al servidor ────────────────────────────────────────
+        // Enviar posición al servidor
         if (Time.time >= _nextSendTime && GameClient.Instance != null)
         {
             string state = dir.magnitude > 0.01f ? "moviendose" : "jugando";
-            GameClient.Instance.SendMove(
-                transform.position.x,
-                transform.position.z,
-                state);
+            GameClient.Instance.SendMove(transform.position.x, transform.position.z, state);
             _nextSendTime = Time.time + sendInterval;
         }
 
-        // ── Activar viento propio con tecla E ──────────────────────────────────
-        if (Input.GetKeyDown(KeyCode.E) && !_boosted)
-        {
-            GameClient.Instance?.SendPowerupActivate("viento_propio");
-        }
+        // Q → portal propio
+        if (Input.GetKeyDown(KeyCode.Q))
+            GameClient.Instance?.SendPowerupActivate("portal_propio");
     }
 
-    // ── Colisión con runas ─────────────────────────────────────────────────────
     private void OnTriggerEnter(Collider other)
     {
         var runa = other.GetComponent<RunaObject>();
         if (runa == null) return;
-
-        // Solicitar al servidor. El objeto NO se destruye aquí:
-        // solo desaparece cuando llega collect_confirm (en GameManager).
-        GameClient.Instance?.SendCollectRequest(runa.RunaId, "runa_comun");
+        // Enviar el objectType real para que el servidor sepa si es runa o viento
+        GameClient.Instance?.SendCollectRequest(runa.RunaId, runa.ObjectType);
     }
 
-    // ── API pública ────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Llamado por GameManager cuando el servidor confirma powerup_confirm.
-    /// </summary>
+    // Llamado por GameManager al recibir collect_confirm de powerup_viento
     public void ApplySpeedBoost(float duration)
     {
         if (_boosted) return;
         StartCoroutine(SpeedBoostRoutine(duration));
     }
 
-    /// <summary>Botón HUD de viento propio (alternativa a tecla E).</summary>
-    public void OnVientoPropioBtnPressed()
+    // Botón HUD "Portal"
+    public void OnPortalButtonPressed()
     {
-        if (!_boosted)
-            GameClient.Instance?.SendPowerupActivate("viento_propio");
+        GameClient.Instance?.SendPowerupActivate("portal_propio");
     }
 
-    // ── Coroutine ──────────────────────────────────────────────────────────────
     private IEnumerator SpeedBoostRoutine(float duration)
     {
         _boosted = true;
         _currentSpeed = baseSpeed * speedBoostMul;
 
-        // Feedback visual sencillo: cambiar color temporalmente
         var renderer = GetComponent<Renderer>();
         Color original = Color.white;
         if (renderer) { original = renderer.material.color; renderer.material.color = Color.cyan; }

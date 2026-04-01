@@ -150,16 +150,20 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::GameManager
   playerPrefab: {fileID: 0}
   runaPrefab: {fileID: 0}
+  vientoPrefab: {fileID: 0}
+  meteorPrefab: {fileID: 0}
+  zonaPrefab: {fileID: 0}
   playerColors:
   - {r: 0.9, g: 0.2, b: 0.2, a: 1}
   - {r: 0.2, g: 0.4, b: 0.9, a: 1}
   - {r: 0.2, g: 0.8, b: 0.3, a: 1}
   - {r: 0.9, g: 0.8, b: 0.1, a: 1}
-  camHeight: 12
-  camDistance: 8
-  timerLabel: {fileID: 0}
+  camHeight: 27
+  camDistance: 17
   scoreLabel: {fileID: 0}
-  powerupLabel: {fileID: 0}
+  timerLabel: {fileID: 0}
+  portalUsesLabel: {fileID: 0}
+  statusLabel: {fileID: 0}
   resultsPanel: {fileID: 0}
   resultsLabel: {fileID: 0}
 --- !u!4 &250244447
@@ -503,8 +507,8 @@ Transform:
   m_GameObject: {fileID: 1768604576}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 20, y: 20, z: 20}
+  m_LocalPosition: {x: 50, y: 0, z: 50}
+  m_LocalScale: {x: 10, y: 1, z: 10}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
