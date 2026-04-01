@@ -6,38 +6,27 @@ using System.Threading;
 using TMPro;
 using UnityEngine;
 using UnityEngine.Events;
+using UnityEngine.SceneManagement;
 
 /// <summary>
-/// GameClient — Fase 1: Conexión y Lobby.
+/// GameClient — Fase 2: JSON + carga de escena de juego.
 ///
-/// Qué hace este script:
-///   - El jugador escribe IP, puerto y nombre, pulsa "Conectar".
-///   - Se conecta al GameServer y envía su nombre (LOBBY_JOIN).
-///   - Escucha mensajes del servidor en un hilo separado.
-///   - Cuando recibe LOBBY_STATE, actualiza la UI del lobby.
-///   - Cuando recibe GAME_START, dispara el evento OnGameStart
-///     (en la siguiente fase esto cargará la escena de juego).
+/// Cambios respecto a fase anterior:
+///   - Al conectarse envía connect_request (JSON) en lugar de LOBBY_JOIN.
+///   - Parsea connect_ack para obtener el playerId asignado.
+///   - Al recibir match_start, carga la escena de juego via SceneManager.
+///   - Expone métodos para que PlayerController envíe player_move,
+///     collect_request y powerup_activate.
+///   - Expone eventos para que GameManager reaccione a los mensajes del servidor.
 ///
-/// El host también usa este script para conectarse a su propio servidor
-/// (localhost / 127.0.0.1). GameServer y GameClient coexisten en el mismo GameObject.
-///
-/// PROTOCOLO (solo esta fase):
-///
-///   Cliente → Servidor:
-///     LOBBY_JOIN:<nombre>
-///
-///   Servidor → Este cliente:
-///     ASSIGNED_ID:<id>
-///     LOBBY_STATE:<n>/<max>|<id>:<nombre>,...
-///     GAME_START
-///     SERVER_FULL
+/// Los mensajes de lobby (LOBBY_STATE) se siguen procesando igual que antes.
 /// </summary>
 public class GameClient : MonoBehaviour
 {
-    // ── Singleton ─────────────────────────────────────────────────────────────
+    // ── Singleton ──────────────────────────────────────────────────────────────
     public static GameClient Instance { get; private set; }
 
-    // ── Referencias UI ────────────────────────────────────────────────────────
+    // ── UI ─────────────────────────────────────────────────────────────────────
     [Header("UI Conexión")]
     [SerializeField] private TMP_InputField ipField;
     [SerializeField] private TMP_InputField portField;
@@ -45,61 +34,58 @@ public class GameClient : MonoBehaviour
     [SerializeField] private TMP_Text statusLabel;
 
     [Header("UI Lobby")]
-    [SerializeField] private TMP_Text lobbyListLabel;   // Lista de jugadores conectados
-    [SerializeField] private TMP_Text lobbyCountLabel;  // "2/4 jugadores"
+    [SerializeField] private TMP_Text lobbyListLabel;
+    [SerializeField] private TMP_Text lobbyCountLabel;
 
-    // ── Configuración ─────────────────────────────────────────────────────────
+    [Header("Escena de juego")]
+    [SerializeField] private string gameSceneName = "GameScene";
+
+    // ── Configuración ──────────────────────────────────────────────────────────
     [Header("Configuración")]
     [SerializeField] private int defaultPort = 7777;
 
-    // ── Eventos públicos ──────────────────────────────────────────────────────
-    // Otros scripts (o la UI) se suscriben a estos eventos en el Inspector
-    // o por código. Por ahora solo usamos OnGameStart.
+    // ── Eventos públicos ───────────────────────────────────────────────────────
+    // GameManager se suscribe a estos desde la escena de juego.
+    [HideInInspector] public UnityEvent<string> OnMatchStart = new(); // JSON completo
+    [HideInInspector] public UnityEvent<string> OnPlayerMove = new(); // JSON completo
+    [HideInInspector] public UnityEvent<string> OnCollectConfirm = new(); // JSON completo
+    [HideInInspector] public UnityEvent<string> OnCollectDeny = new(); // JSON completo
+    [HideInInspector] public UnityEvent<string> OnPowerupConfirm = new(); // JSON completo
+    [HideInInspector] public UnityEvent<string> OnMatchEnd = new(); // JSON completo
+    [HideInInspector] public UnityEvent<string> OnError = new();
 
-    [HideInInspector] public UnityEvent<int> OnAssignedId = new(); // Mi ID asignado
-    [HideInInspector] public UnityEvent<string> OnLobbyState = new(); // Estado del lobby raw
-    [HideInInspector] public UnityEvent OnGameStart = new(); // Señal de inicio
-    [HideInInspector] public UnityEvent<string> OnError = new(); // Mensaje de error
-
-    // ── Estado público ────────────────────────────────────────────────────────
-    public int MyId { get; private set; } = -1;
+    // ── Estado público ─────────────────────────────────────────────────────────
+    public string PlayerId { get; private set; } = "";   // "P0", "P1", etc.
+    public string PlayerName { get; private set; } = "";
     public bool Connected { get; private set; } = false;
+    public bool InGame { get; private set; } = false;
 
-    // ── Estado interno ────────────────────────────────────────────────────────
+    // ── Estado interno ─────────────────────────────────────────────────────────
     private TcpClient _client;
     private Thread _readThread;
     private volatile bool _active = false;
 
-    // Los hilos de red depositan acciones aquí; Update() las ejecuta en el main thread.
-    private readonly ConcurrentQueue<Action> _mainThreadQueue = new();
+    private readonly ConcurrentQueue<Action> _mainQueue = new();
     private readonly StringBuilder _recvBuffer = new();
 
-    // ── Ciclo Unity ───────────────────────────────────────────────────────────
+    // ── Ciclo Unity ────────────────────────────────────────────────────────────
     private void Awake()
     {
-        // Singleton simple: si ya existe una instancia, destruir esta.
-        if (Instance != null && Instance != this)
-        {
-            Destroy(gameObject);
-            return;
-        }
+        if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
-        DontDestroyOnLoad(gameObject); // Persistir entre escenas
+        DontDestroyOnLoad(gameObject);
     }
 
     private void Start()
     {
-        // Prerellenar puerto si está vacío
         if (portField && string.IsNullOrWhiteSpace(portField.text))
             portField.text = defaultPort.ToString();
-
         SetStatus("Listo para conectar.");
     }
 
     private void Update()
     {
-        // Ejecutar en el main thread todo lo que los hilos de red encolaron.
-        while (_mainThreadQueue.TryDequeue(out Action action))
+        while (_mainQueue.TryDequeue(out Action action))
             action?.Invoke();
     }
 
@@ -110,12 +96,7 @@ public class GameClient : MonoBehaviour
         Disconnect();
     }
 
-    // ── Botones UI ────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// El jugador pulsa "Conectar".
-    /// Lanza la conexión en un hilo para no bloquear la UI.
-    /// </summary>
+    // ── Botones UI ─────────────────────────────────────────────────────────────
     public void OnConnect()
     {
         if (Connected) { SetStatus("Ya estás conectado."); return; }
@@ -123,68 +104,50 @@ public class GameClient : MonoBehaviour
         string ip = ipField ? ipField.text.Trim() : "";
         string name = nameField ? nameField.text.Trim() : "";
 
-        if (string.IsNullOrEmpty(ip))
-        {
-            SetStatus("Escribe la IP del servidor.");
-            return;
-        }
-        if (string.IsNullOrEmpty(name))
-        {
-            SetStatus("Escribe tu nombre.");
-            return;
-        }
+        if (string.IsNullOrEmpty(ip)) { SetStatus("Escribe la IP del servidor."); return; }
+        if (string.IsNullOrEmpty(name)) { SetStatus("Escribe tu nombre."); return; }
 
+        PlayerName = name;
         int port = GetPort();
         SetStatus($"Conectando a {ip}:{port}...");
 
         new Thread(() => ConnectThread(ip, port, name)) { IsBackground = true }.Start();
     }
 
-    /// <summary>
-    /// El jugador pulsa "Desconectar".
-    /// </summary>
-    public void OnDisconnect()
-    {
-        Disconnect();
-        SetStatus("Desconectado.");
-    }
+    public void OnDisconnect() { Disconnect(); SetStatus("Desconectado."); }
 
-    // ── Lógica de conexión (hilo) ─────────────────────────────────────────────
+    // ── Conexión (hilo) ────────────────────────────────────────────────────────
     private void ConnectThread(string ip, int port, string name)
     {
         try
         {
             _client = new TcpClient();
-            _client.Connect(ip, port);   // Bloqueante
+            _client.Connect(ip, port);
             _client.NoDelay = true;
             _active = true;
             Connected = true;
 
-            RunOnMain(() => SetStatus($"Conectado a {ip}:{port}. Entrando al lobby..."));
+            RunOnMain(() => SetStatus($"Conectado a {ip}:{port}"));
 
-            // Lanzar hilo de lectura
             _readThread = new Thread(ReadLoop) { IsBackground = true };
             _readThread.Start();
 
-            // Anunciar nombre al servidor
-            Send($"LOBBY_JOIN:{name}");
+            // Enviar connect_request con nombre
+            long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            SendRaw($"{{\"type\":\"connect_request\",\"playerName\":\"{name}\",\"timestamp\":{ts}}}");
         }
         catch (Exception ex)
         {
-            RunOnMain(() =>
-            {
-                SetStatus($"No se pudo conectar: {ex.Message}");
-                OnError.Invoke(ex.Message);
-            });
+            RunOnMain(() => { SetStatus($"No se pudo conectar: {ex.Message}"); OnError.Invoke(ex.Message); });
             Connected = false;
             try { _client?.Close(); } catch { }
         }
     }
 
-    // ── Hilo de lectura ───────────────────────────────────────────────────────
+    // ── Hilo de lectura ────────────────────────────────────────────────────────
     private void ReadLoop()
     {
-        var buf = new byte[4096];
+        var buf = new byte[8192];
         try
         {
             NetworkStream stream = _client.GetStream();
@@ -194,7 +157,6 @@ public class GameClient : MonoBehaviour
                 if (read == 0) break;
 
                 _recvBuffer.Append(Encoding.UTF8.GetString(buf, 0, read).Replace("\r", ""));
-
                 string raw = _recvBuffer.ToString();
                 int nl;
                 while ((nl = raw.IndexOf('\n')) >= 0)
@@ -211,111 +173,135 @@ public class GameClient : MonoBehaviour
                 _recvBuffer.Append(raw);
             }
         }
-        catch
-        {
-            // Desconexión inesperada.
-        }
+        catch { }
         finally
         {
             Connected = false;
-            _active = false;
-            RunOnMain(() =>
-            {
-                SetStatus("Desconectado del servidor.");
-                ClearLobbyUI();
-            });
+            InGame = false;
+            RunOnMain(() => { SetStatus("Desconectado del servidor."); ClearLobbyUI(); });
         }
     }
 
-    // ── Parseo de mensajes ────────────────────────────────────────────────────
+    // ── Parseo de mensajes ─────────────────────────────────────────────────────
     private void ParseMessage(string msg)
     {
-        // ASSIGNED_ID:<id>
-        if (msg.StartsWith("ASSIGNED_ID:"))
-        {
-            if (int.TryParse(msg.Substring("ASSIGNED_ID:".Length), out int id))
-            {
-                MyId = id;
-                SetStatus($"En el lobby. Tu ID: {id}");
-                OnAssignedId.Invoke(id);
-            }
-            return;
-        }
-
-        // LOBBY_STATE:2/4|0:Ana,1:Luis
+        // ── Mensajes de lobby (texto plano, fase anterior) ─────────────────────
         if (msg.StartsWith("LOBBY_STATE:"))
         {
-            string raw = msg.Substring("LOBBY_STATE:".Length);
-            ParseLobbyState(raw);
-            OnLobbyState.Invoke(raw);
+            ParseLobbyState(msg.Substring("LOBBY_STATE:".Length));
             return;
         }
 
-        // GAME_START
-        if (msg == "GAME_START")
+        // ── Mensajes JSON ──────────────────────────────────────────────────────
+        if (!msg.StartsWith("{")) return;
+
+        string type = GameServer.ExtractString(msg, "type");
+
+        switch (type)
         {
-            SetStatus("¡La partida está comenzando!");
-            OnGameStart.Invoke();
-            return;
-        }
+            case "connect_ack":
+                // { "type":"connect_ack", "playerId":"P0", "timestamp":... }
+                PlayerId = GameServer.ExtractString(msg, "playerId");
+                SetStatus($"En el lobby. Eres {PlayerId} ({PlayerName})");
+                break;
 
-        // SERVER_FULL
-        if (msg == "SERVER_FULL")
-        {
-            SetStatus("La sala está llena. Intenta más tarde.");
-            OnError.Invoke("Sala llena.");
-            Disconnect();
-            return;
-        }
+            case "match_start":
+                // El servidor inicia la partida
+                InGame = true;
+                SetStatus("¡Partida iniciando!");
+                string matchJson = msg;  // guardar antes de capturar en lambda
+                RunOnMain(() =>
+                {
+                    // Disparar el evento ANTES de cargar la escena para que
+                    // GameManager (si ya existe) pueda recibirlo.
+                    // Tras LoadScene, GameManager se suscribirá en OnEnable.
+                    // Guardamos el JSON para que GameManager lo lea al despertar.
+                    PendingMatchStart = matchJson;
+                    SceneManager.LoadScene(gameSceneName);
+                });
+                break;
 
-        Debug.Log($"[Client] Mensaje no reconocido: \"{msg}\"");
+            case "player_move":
+                OnPlayerMove.Invoke(msg);
+                break;
+
+            case "collect_confirm":
+                OnCollectConfirm.Invoke(msg);
+                break;
+
+            case "collect_deny":
+                OnCollectDeny.Invoke(msg);
+                break;
+
+            case "powerup_confirm":
+                OnPowerupConfirm.Invoke(msg);
+                break;
+
+            case "match_end":
+                InGame = false;
+                OnMatchEnd.Invoke(msg);
+                break;
+
+            case "error":
+                string errMsg = GameServer.ExtractString(msg, "message");
+                SetStatus($"Error: {errMsg}");
+                OnError.Invoke(errMsg);
+                break;
+
+            default:
+                Debug.Log($"[Client] Tipo no manejado: {type}");
+                break;
+        }
     }
 
-    // ── Parseo del estado del lobby ───────────────────────────────────────────
-
+    // ── JSON pendiente para GameManager ───────────────────────────────────────
     /// <summary>
-    /// Interpreta "2/4|0:Ana,1:Luis" y actualiza los labels del lobby.
+    /// El JSON de match_start se guarda aquí mientras se carga la escena.
+    /// GameManager lo lee en su Start() para inicializar el estado.
     /// </summary>
-    private void ParseLobbyState(string raw)
+    public string PendingMatchStart { get; private set; } = "";
+
+    public void ClearPendingMatchStart() => PendingMatchStart = "";
+
+    // ── API pública para PlayerController ────────────────────────────────────
+
+    /// <summary>Envía la posición del jugador al servidor.</summary>
+    public void SendMove(float x, float z, string state = "moviendose")
     {
-        // Separar "2/4" de "0:Ana,1:Luis"
-        int sep = raw.IndexOf('|');
-        string countPart = sep >= 0 ? raw.Substring(0, sep) : raw;
-        string playersPart = sep >= 0 ? raw.Substring(sep + 1) : "";
-
-        if (lobbyCountLabel)
-            lobbyCountLabel.text = $"Jugadores: {countPart}";
-
-        if (lobbyListLabel)
-        {
-            if (string.IsNullOrEmpty(playersPart))
-            {
-                lobbyListLabel.text = "Sin jugadores aún...";
-                return;
-            }
-
-            var lines = new System.Text.StringBuilder();
-            foreach (string entry in playersPart.Split(','))
-            {
-                if (string.IsNullOrWhiteSpace(entry)) continue;
-                int colon = entry.IndexOf(':');
-                if (colon < 0) continue;
-
-                string playerId = entry.Substring(0, colon);
-                string playerName = entry.Substring(colon + 1);
-
-                // Marcar al jugador propio
-                bool isMe = int.TryParse(playerId, out int pid) && pid == MyId;
-                lines.AppendLine(isMe ? $"• {playerName} (tú)" : $"• {playerName}");
-            }
-            lobbyListLabel.text = lines.ToString().TrimEnd();
-        }
+        if (!InGame) return;
+        long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        string json =
+            $"{{\"type\":\"player_move\",\"playerId\":\"{PlayerId}\"," +
+            $"\"position\":{{\"x\":{x:F2},\"y\":0.0,\"z\":{z:F2}}}," +
+            $"\"state\":\"{state}\",\"timestamp\":{ts}}}";
+        SendRaw(json);
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    /// <summary>Solicita recoger una runa al servidor.</summary>
+    public void SendCollectRequest(string objectId, string objectType = "runa_comun")
+    {
+        if (!InGame) return;
+        long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        string json =
+            $"{{\"type\":\"collect_request\",\"playerId\":\"{PlayerId}\"," +
+            $"\"objectId\":\"{objectId}\",\"objectType\":\"{objectType}\"," +
+            $"\"timestamp\":{ts}}}";
+        SendRaw(json);
+    }
 
-    /// <summary>Envía un mensaje al servidor.</summary>
-    public void Send(string msg)
+    /// <summary>Solicita activar viento propio.</summary>
+    public void SendPowerupActivate(string powerupType = "viento_propio")
+    {
+        if (!InGame) return;
+        long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        string json =
+            $"{{\"type\":\"powerup_activate\",\"playerId\":\"{PlayerId}\"," +
+            $"\"powerupType\":\"{powerupType}\",\"timestamp\":{ts}}}";
+        SendRaw(json);
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+    private void SendRaw(string msg)
     {
         if (_client == null || !_client.Connected) return;
         try
@@ -323,10 +309,7 @@ public class GameClient : MonoBehaviour
             byte[] data = Encoding.UTF8.GetBytes(msg + "\n");
             _client.GetStream().Write(data, 0, data.Length);
         }
-        catch (Exception ex)
-        {
-            RunOnMain(() => SetStatus($"Error al enviar: {ex.Message}"));
-        }
+        catch (Exception ex) { RunOnMain(() => SetStatus($"Error al enviar: {ex.Message}")); }
     }
 
     private void Disconnect()
@@ -334,18 +317,39 @@ public class GameClient : MonoBehaviour
         if (!_active && !Connected) return;
         _active = false;
         Connected = false;
-        MyId = -1;
+        InGame = false;
         try { _client?.Close(); } catch { }
         try { _readThread?.Join(200); } catch { }
     }
 
-    /// <summary>Encola una acción para ejecutarse en el hilo principal (Update).</summary>
-    private void RunOnMain(Action action) => _mainThreadQueue.Enqueue(action);
-
-    private void SetStatus(string text)
+    private void ParseLobbyState(string raw)
     {
-        if (statusLabel) statusLabel.text = text;
+        int sep = raw.IndexOf('|');
+        string countPart = sep >= 0 ? raw.Substring(0, sep) : raw;
+        string playersPart = sep >= 0 ? raw.Substring(sep + 1) : "";
+
+        if (lobbyCountLabel) lobbyCountLabel.text = $"Jugadores: {countPart}";
+
+        if (lobbyListLabel)
+        {
+            if (string.IsNullOrEmpty(playersPart)) { lobbyListLabel.text = "Sin jugadores aún..."; return; }
+            var sb = new StringBuilder();
+            foreach (string entry in playersPart.Split(','))
+            {
+                int colon = entry.IndexOf(':');
+                if (colon < 0) continue;
+                string pid = entry.Substring(0, colon);
+                string pname = entry.Substring(colon + 1);
+                bool isMe = $"P{pid}" == PlayerId;
+                sb.AppendLine(isMe ? $"• {pname} (tú)" : $"• {pname}");
+            }
+            lobbyListLabel.text = sb.ToString().TrimEnd();
+        }
     }
+
+    private void RunOnMain(Action action) => _mainQueue.Enqueue(action);
+
+    private void SetStatus(string text) { if (statusLabel) statusLabel.text = text; }
 
     private void ClearLobbyUI()
     {
