@@ -12,32 +12,42 @@ using UnityEngine;
 using UnityEngine.UI;
 
 /// <summary>
-/// GameServer — Fase 1: Conexión y Lobby.
+/// GameServer — Fase 2: Juego básico con protocolo JSON.
 ///
-/// Qué hace este script:
-///   - El host pulsa "Crear sala": levanta el TcpListener.
-///   - Acepta hasta 4 jugadores. Si llega un 5º, lo rechaza.
-///   - A cada cliente que se conecta le asigna un ID y espera que mande su nombre.
-///   - Cada vez que alguien entra o sale, hace broadcast del estado del lobby
-///     para que todos vean la lista actualizada.
-///   - El host pulsa "Iniciar partida": broadcast GAME_START (solo si hay >= 2).
+/// Nuevas responsabilidades respecto a la fase anterior:
+///   - Al iniciar la partida, genera posiciones de spawn y de runas
+///     y las envía a todos los clientes.
+///   - Valida collect_request: acepta el primero, deniega al resto.
+///   - Valida powerup_activate (viento propio): confirma si el jugador
+///     tiene usos disponibles y difunde el efecto.
+///   - Reenvía player_move a todos excepto al emisor.
+///   - Controla el temporizador y emite match_end al terminarse.
 ///
-/// PROTOCOLO (solo esta fase):
+/// PROTOCOLO JSON — mensajes nuevos en esta fase:
 ///
 ///   Cliente → Servidor:
-///     LOBBY_JOIN:<nombre>
+///     { "type":"player_move",      "playerId":"P0", "position":{x,z}, "state":"moviendose" }
+///     { "type":"collect_request",  "playerId":"P0", "objectId":"RUNE_5", "objectType":"runa_comun" }
+///     { "type":"powerup_activate", "playerId":"P0", "powerupType":"viento_propio" }
 ///
-///   Servidor → Cliente (solo al nuevo):
-///     ASSIGNED_ID:<id>
+///   Servidor → Todos:
+///     { "type":"match_start",   "sessionId":"room01", "duration":90,
+///       "players":[{"id":"P0","spawnX":f,"spawnZ":f},...],
+///       "runes":[{"id":"RUNE_0","x":f,"z":f,"runeType":"runa_comun"},...]  }
+///     { "type":"player_move",      "playerId":"P0", "position":{x,z}, "state":"moviendose" }
+///     { "type":"collect_confirm",  "playerId":"P0", "objectId":"RUNE_5",
+///                                  "scoreDelta":1, "newScore":3, "objectState":"recolectada" }
+///     { "type":"collect_deny",     "playerId":"P0", "objectId":"RUNE_5" }
+///     { "type":"powerup_confirm",  "playerId":"P0", "powerupType":"viento_propio",
+///                                  "duration":5, "state":"acelerado", "vfx":"wind_trail_green" }
+///     { "type":"match_end",        "sessionId":"room01", "winnerPlayerId":"P0",
+///                                  "finalScores":[{"playerId":"P0","score":7},...] }
 ///
-///   Servidor → Todos (broadcast):
-///     LOBBY_STATE:<conectados>/<max>|<id>:<nombre>,<id>:<nombre>,...
-///     GAME_START
-///     SERVER_FULL
+///   (Los mensajes de lobby de la fase anterior se mantienen sin cambios)
 /// </summary>
 public class GameServer : MonoBehaviour
 {
-    // ── Referencias UI ────────────────────────────────────────────────────────
+    // ── UI ─────────────────────────────────────────────────────────────────────
     [Header("UI")]
     [SerializeField] private TMP_Text ipLabel;
     [SerializeField] private TMP_Text portLabel;
@@ -46,126 +56,112 @@ public class GameServer : MonoBehaviour
     [SerializeField] private TMP_Text playerListLabel;
     [SerializeField] private Button startGameButton;
 
-    // ── Configuración ─────────────────────────────────────────────────────────
+    // ── Configuración ──────────────────────────────────────────────────────────
     [Header("Configuración")]
     [SerializeField] private int defaultPort = 7777;
     [SerializeField] private int maxPlayers = 4;
     [SerializeField] private int minPlayers = 2;
+    [SerializeField] private int totalRunes = 10;   // runas para la prueba básica
+    [SerializeField] private float mapSize = 20f;  // tamaño del plano de prueba
+    [SerializeField] private float gameDuration = 90f;
+    [SerializeField] private int powerUpUses = 2;    // usos de viento por partida
 
-    // ── Estado interno ────────────────────────────────────────────────────────
+    // ── Estado interno ─────────────────────────────────────────────────────────
     private TcpListener _listener;
     private Thread _acceptThread;
     private volatile bool _running = false;
+    private volatile bool _gameActive = false;
 
     private readonly List<PlayerSession> _sessions = new();
     private readonly object _sessLock = new();
     private readonly ConcurrentQueue<string> _uiQueue = new();
 
-    // Señal para refrescar el botón y la lista desde el hilo principal
+    // Runas: id → recogida (true/false). Acceso bajo _runaLock.
+    private readonly Dictionary<string, bool> _runas = new();
+    private readonly object _runaLock = new();
+
     private volatile bool _pendingUIRefresh = false;
-
+    private float _gameEndTime;
     private int _nextId = 0;
+    private string _sessionId = "room01";
 
-    // ── Ciclo Unity ───────────────────────────────────────────────────────────
+    // ── Ciclo Unity ────────────────────────────────────────────────────────────
     private void Start()
     {
         UpdateIpLabel();
-
         int p = GetPort();
         if (portLabel) portLabel.text = $"Puerto: {p}";
         if (portField && string.IsNullOrWhiteSpace(portField.text))
             portField.text = p.ToString();
-
         if (startGameButton) startGameButton.interactable = false;
         if (playerListLabel) playerListLabel.text = "Sin jugadores aún...";
     }
 
     private void Update()
     {
-        // Volcar mensajes de log encolados desde hilos de red
         while (_uiQueue.TryDequeue(out string line))
         {
             if (logArea)
             {
                 logArea.text += (logArea.text.Length > 0 ? "\n" : "") + line;
-                // Limitar a 80 líneas
                 var ls = logArea.text.Split('\n');
                 if (ls.Length > 80)
                     logArea.text = string.Join("\n", ls.Skip(ls.Length - 80));
             }
         }
 
-        // Refrescar lista de jugadores y botón de inicio (solo en hilo principal)
         if (_pendingUIRefresh)
         {
             _pendingUIRefresh = false;
             RefreshLobbyUI();
+        }
+
+        // Temporizador de partida
+        if (_gameActive && Time.time >= _gameEndTime)
+        {
+            _gameActive = false;
+            BroadcastMatchEnd();
         }
     }
 
     private void OnApplicationQuit() => StopServer();
     private void OnDestroy() => StopServer();
 
-    // ── Botones UI ────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// El host pulsa "Crear sala".
-    /// </summary>
+    // ── Botones UI ─────────────────────────────────────────────────────────────
     public void OnCreateRoom()
     {
         if (_running) { Log("[Server] La sala ya está abierta."); return; }
-
         int port = GetPort();
         try
         {
             _listener = new TcpListener(IPAddress.Any, port);
             _listener.Start();
             _running = true;
-
             if (portLabel) portLabel.text = $"Puerto: {port}";
             UpdateIpLabel();
-
             Log($"[Server] Sala creada. IP: {GetBestIPv4()}  Puerto: {port}");
-            Log("[Server] Esperando jugadores...");
             DumpAllIPs();
-
             _acceptThread = new Thread(AcceptLoop) { IsBackground = true };
             _acceptThread.Start();
         }
-        catch (Exception ex)
-        {
-            Log($"[Server] Error al crear sala: {ex.Message}");
-        }
+        catch (Exception ex) { Log($"[Server] Error: {ex.Message}"); }
     }
 
-    /// <summary>
-    /// El host pulsa "Iniciar partida".
-    /// </summary>
     public void OnStartGame()
     {
         int count;
         lock (_sessLock) count = _sessions.Count;
-
         if (count < minPlayers)
         {
-            Log($"[Server] Faltan jugadores (hay {count}, mínimo {minPlayers}).");
+            Log($"[Server] Faltan jugadores ({count}/{minPlayers} mínimo).");
             return;
         }
-
-        Log("[Server] ¡Partida iniciada!");
-        Broadcast("GAME_START");
+        StartMatch();
     }
 
-    /// <summary>
-    /// El host pulsa "Cerrar sala".
-    /// </summary>
-    public void OnCloseRoom()
-    {
-        StopServer();
-        Log("[Server] Sala cerrada.");
-    }
+    public void OnCloseRoom() { StopServer(); Log("[Server] Sala cerrada."); }
 
-    // ── Bucle de aceptación (hilo) ────────────────────────────────────────────
+    // ── Bucle de aceptación ────────────────────────────────────────────────────
     private void AcceptLoop()
     {
         try
@@ -176,12 +172,11 @@ public class GameServer : MonoBehaviour
                 client.NoDelay = true;
 
                 bool full;
-                lock (_sessLock) full = _sessions.Count >= maxPlayers;
+                lock (_sessLock) full = _sessions.Count >= maxPlayers || _gameActive;
 
                 if (full)
                 {
-                    Log("[Server] Conexión rechazada: sala llena.");
-                    SendDirect(client, "SERVER_FULL\n");
+                    SendDirect(client, BuildJson("error", "message", "Sala llena o partida en curso"));
                     client.Close();
                     continue;
                 }
@@ -190,45 +185,34 @@ public class GameServer : MonoBehaviour
                 var session = new PlayerSession(id, client);
                 lock (_sessLock) _sessions.Add(session);
 
-                Log($"[Server] Nueva conexión: {client.Client.RemoteEndPoint} → id={id}");
+                Log($"[Server] Conectado id=P{id} desde {client.Client.RemoteEndPoint}");
 
-                // Enviar ID asignado directamente a este cliente
-                SendDirect(client, $"ASSIGNED_ID:{id}\n");
+                // Enviar connect_ack con el ID asignado
+                SendDirect(client, JsonConnectAck(id));
 
-                // Lanzar hilo de lectura para este cliente
                 var t = new Thread(() => ClientReadLoop(session)) { IsBackground = true };
                 t.Start();
             }
         }
-        catch (SocketException)
-        {
-            // Normal al detener el servidor.
-        }
-        catch (Exception ex)
-        {
-            Log($"[Server] Error en AcceptLoop: {ex.Message}");
-        }
+        catch (SocketException) { }
+        catch (Exception ex) { Log($"[Server] AcceptLoop error: {ex.Message}"); }
     }
 
-    // ── Bucle de lectura por cliente (hilo) ───────────────────────────────────
+    // ── Bucle de lectura por cliente ───────────────────────────────────────────
     private void ClientReadLoop(PlayerSession sess)
     {
-        string endpoint = sess.Client.Client.RemoteEndPoint?.ToString() ?? "?";
+        string ep = sess.Client.Client.RemoteEndPoint?.ToString() ?? "?";
         var sb = new StringBuilder();
-        var buf = new byte[4096];
-
+        var buf = new byte[8192];
         try
         {
             NetworkStream stream = sess.Client.GetStream();
-
             while (_running && sess.Client.Connected)
             {
                 int read = stream.Read(buf, 0, buf.Length);
-                if (read == 0) break; // El cliente cerró la conexión limpiamente.
+                if (read == 0) break;
 
                 sb.Append(Encoding.UTF8.GetString(buf, 0, read).Replace("\r", ""));
-
-                // Extraer mensajes completos (delimitados por \n)
                 string raw = sb.ToString();
                 int nl;
                 while ((nl = raw.IndexOf('\n')) >= 0)
@@ -239,50 +223,206 @@ public class GameServer : MonoBehaviour
                         HandleMessage(sess, msg);
                 }
                 sb.Clear();
-                sb.Append(raw); // Guardar fragmento incompleto
+                sb.Append(raw);
             }
         }
-        catch
-        {
-            // Desconexión abrupta.
-        }
+        catch { }
         finally
         {
-            string name = string.IsNullOrEmpty(sess.Name) ? $"id={sess.Id}" : sess.Name;
-            Log($"[Server] Desconectado: {name} ({endpoint})");
-
+            string name = string.IsNullOrEmpty(sess.Name) ? $"P{sess.Id}" : sess.Name;
+            Log($"[Server] Desconectado: {name} ({ep})");
             lock (_sessLock) _sessions.Remove(sess);
             try { sess.Client.Close(); } catch { }
-
-            // Notificar a los demás que alguien salió
             BroadcastLobbyState();
             _pendingUIRefresh = true;
         }
     }
 
-    // ── Manejo de mensajes ────────────────────────────────────────────────────
-    private void HandleMessage(PlayerSession sess, string msg)
+    // ── Manejo de mensajes ─────────────────────────────────────────────────────
+    private void HandleMessage(PlayerSession sess, string json)
     {
-        if (msg.StartsWith("LOBBY_JOIN:"))
-        {
-            string name = msg.Substring("LOBBY_JOIN:".Length).Trim();
-            sess.Name = string.IsNullOrEmpty(name) ? $"Jugador{sess.Id}" : name;
+        // Extraer "type" sin dependencia de JsonUtility (que requiere clases marcadas)
+        string type = ExtractString(json, "type");
 
-            Log($"[Server] {sess.Name} se unió al lobby.");
-            BroadcastLobbyState();
-            _pendingUIRefresh = true;
-        }
-        else
+        switch (type)
         {
-            Log($"[Server] Mensaje desconocido de id={sess.Id}: \"{msg}\"");
+            // ── Lobby ──────────────────────────────────────────────────────────
+            case "connect_request":
+                sess.Name = ExtractString(json, "playerName");
+                if (string.IsNullOrEmpty(sess.Name)) sess.Name = $"Jugador{sess.Id}";
+                Log($"[Server] {sess.Name} se unió al lobby.");
+                BroadcastLobbyState();
+                _pendingUIRefresh = true;
+                break;
+
+            // ── Movimiento ─────────────────────────────────────────────────────
+            case "player_move":
+                if (!_gameActive) break;
+                // Actualizar posición en sesión y reenviar a los demás
+                sess.PosX = ExtractFloat(json, "x");
+                sess.PosZ = ExtractFloat(json, "z");
+                BroadcastExcept(sess, json);  // reenviar tal cual
+                break;
+
+            // ── Recolección ────────────────────────────────────────────────────
+            case "collect_request":
+                if (!_gameActive) break;
+                HandleCollectRequest(sess, json);
+                break;
+
+            // ── Power-up viento propio ─────────────────────────────────────────
+            case "powerup_activate":
+                if (!_gameActive) break;
+                HandlePowerupActivate(sess, json);
+                break;
+
+            default:
+                Log($"[Server] Mensaje desconocido de P{sess.Id}: {type}");
+                break;
         }
     }
 
-    // ── Broadcast del estado del lobby ────────────────────────────────────────
+    // ── Lógica de partida ──────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Envía a todos: LOBBY_STATE:2/4|0:Ana,1:Luis
-    /// </summary>
+    private void StartMatch()
+    {
+        _runas.Clear();
+        _gameActive = true;
+        _gameEndTime = Time.time + gameDuration;
+
+        var rng = new System.Random();
+
+        // Generar spawns y resetear scores
+        List<string> playersJsonItems = new();
+        lock (_sessLock)
+        {
+            foreach (var s in _sessions)
+            {
+                s.Score = 0;
+                s.PowerUpUses = powerUpUses;
+                s.SpawnX = (float)(rng.NextDouble() * (mapSize - 4f)) + 2f;
+                s.SpawnZ = (float)(rng.NextDouble() * (mapSize - 4f)) + 2f;
+                playersJsonItems.Add($"{{\"id\":\"P{s.Id}\",\"spawnX\":{s.SpawnX:F2},\"spawnZ\":{s.SpawnZ:F2}}}");
+            }
+        }
+
+        // Generar runas
+        List<string> runesJsonItems = new();
+        for (int i = 0; i < totalRunes; i++)
+        {
+            string rid = $"RUNE_{i}";
+            float rx = (float)(rng.NextDouble() * (mapSize - 2f)) + 1f;
+            float rz = (float)(rng.NextDouble() * (mapSize - 2f)) + 1f;
+            lock (_runaLock) _runas[rid] = false;   // false = disponible
+            runesJsonItems.Add($"{{\"id\":\"{rid}\",\"x\":{rx:F2},\"z\":{rz:F2},\"runeType\":\"runa_comun\"}}");
+        }
+
+        // Construir match_start manualmente (evita dependencia de Newtonsoft en proyectos vacíos)
+        string playersJson = string.Join(",", playersJsonItems);
+        string runesJson = string.Join(",", runesJsonItems);
+
+        long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        string matchStart =
+            $"{{\"type\":\"match_start\",\"sessionId\":\"{_sessionId}\"," +
+            $"\"duration\":{(int)gameDuration},\"timestamp\":{ts}," +
+            $"\"players\":[{playersJson}],\"runes\":[{runesJson}]}}";
+
+        Broadcast(matchStart);
+        Log($"[Server] Partida iniciada. Jugadores:{_sessions.Count}, Runas:{totalRunes}");
+    }
+
+    private void HandleCollectRequest(PlayerSession sess, string json)
+    {
+        string objectId = ExtractString(json, "objectId");
+        string objectType = ExtractString(json, "objectType");
+        long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        bool alreadyTaken;
+        lock (_runaLock)
+        {
+            alreadyTaken = !_runas.ContainsKey(objectId) || _runas[objectId];
+            if (!alreadyTaken) _runas[objectId] = true;  // marcar como recogida
+        }
+
+        if (alreadyTaken)
+        {
+            // Denegar
+            string deny =
+                $"{{\"type\":\"collect_deny\",\"sessionId\":\"{_sessionId}\"," +
+                $"\"playerId\":\"P{sess.Id}\",\"objectId\":\"{objectId}\"," +
+                $"\"timestamp\":{ts}}}";
+            SendDirect(sess.Client, deny);
+            return;
+        }
+
+        int scoreDelta = objectType == "runa_dorada" ? 2 : 1;
+        sess.Score += scoreDelta;
+
+        // Confirmar a todos (broadcast) para que todos destruyan el objeto
+        string confirm =
+            $"{{\"type\":\"collect_confirm\",\"sessionId\":\"{_sessionId}\"," +
+            $"\"playerId\":\"P{sess.Id}\",\"objectId\":\"{objectId}\"," +
+            $"\"objectType\":\"{objectType}\",\"scoreDelta\":{scoreDelta}," +
+            $"\"newScore\":{sess.Score},\"objectState\":\"recolectada\"," +
+            $"\"timestamp\":{ts}}}";
+        Broadcast(confirm);
+        Log($"[Server] P{sess.Id} recogió {objectId}. Score={sess.Score}");
+    }
+
+    private void HandlePowerupActivate(PlayerSession sess, string json)
+    {
+        string powerupType = ExtractString(json, "powerupType");
+        long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        if (powerupType != "viento_propio")
+        {
+            Log($"[Server] Power-up '{powerupType}' no implementado aún.");
+            return;
+        }
+
+        if (sess.PowerUpUses <= 0)
+        {
+            Log($"[Server] P{sess.Id} no tiene usos de power-up disponibles.");
+            return;
+        }
+
+        sess.PowerUpUses--;
+
+        string confirm =
+            $"{{\"type\":\"powerup_confirm\",\"sessionId\":\"{_sessionId}\"," +
+            $"\"playerId\":\"P{sess.Id}\",\"powerupType\":\"viento_propio\"," +
+            $"\"duration\":5,\"state\":\"acelerado\",\"vfx\":\"wind_trail_green\"," +
+            $"\"timestamp\":{ts}}}";
+        Broadcast(confirm);
+        Log($"[Server] P{sess.Id} activó viento_propio. Usos restantes: {sess.PowerUpUses}");
+    }
+
+    private void BroadcastMatchEnd()
+    {
+        List<string> scores = new();
+        string winner = "P0";
+        int topScore = -1;
+
+        lock (_sessLock)
+        {
+            foreach (var s in _sessions)
+            {
+                scores.Add($"{{\"playerId\":\"P{s.Id}\",\"score\":{s.Score}}}");
+                if (s.Score > topScore) { topScore = s.Score; winner = $"P{s.Id}"; }
+            }
+        }
+
+        long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        string matchEnd =
+            $"{{\"type\":\"match_end\",\"sessionId\":\"{_sessionId}\"," +
+            $"\"winnerPlayerId\":\"{winner}\"," +
+            $"\"finalScores\":[{string.Join(",", scores)}]," +
+            $"\"state\":\"finalizada\",\"timestamp\":{ts}}}";
+        Broadcast(matchEnd);
+        Log($"[Server] Partida terminada. Ganador: {winner}");
+    }
+
+    // ── Lobby ──────────────────────────────────────────────────────────────────
     private void BroadcastLobbyState()
     {
         string countPart, playersPart;
@@ -293,10 +433,11 @@ public class GameServer : MonoBehaviour
                 _sessions.Select(s =>
                     $"{s.Id}:{(string.IsNullOrEmpty(s.Name) ? "..." : s.Name)}"));
         }
+        // El lobby sigue en texto plano para no romper el GameClient del lobby
         Broadcast($"LOBBY_STATE:{countPart}|{playersPart}");
     }
 
-    // ── Helpers de red ────────────────────────────────────────────────────────
+    // ── Helpers de red ─────────────────────────────────────────────────────────
     private void Broadcast(string message)
     {
         byte[] data = Encoding.UTF8.GetBytes(message + "\n");
@@ -314,11 +455,24 @@ public class GameServer : MonoBehaviour
         }
     }
 
+    private void BroadcastExcept(PlayerSession exclude, string message)
+    {
+        byte[] data = Encoding.UTF8.GetBytes(message + "\n");
+        lock (_sessLock)
+        {
+            foreach (var s in _sessions)
+            {
+                if (s == exclude) continue;
+                try { s.Client.GetStream().Write(data, 0, data.Length); } catch { }
+            }
+        }
+    }
+
     private static void SendDirect(TcpClient client, string message)
     {
         try
         {
-            byte[] data = Encoding.UTF8.GetBytes(message);
+            byte[] data = Encoding.UTF8.GetBytes(message + "\n");
             client.GetStream().Write(data, 0, data.Length);
         }
         catch { }
@@ -328,6 +482,7 @@ public class GameServer : MonoBehaviour
     {
         if (!_running) return;
         _running = false;
+        _gameActive = false;
         try { _listener?.Stop(); } catch { }
         lock (_sessLock)
         {
@@ -337,16 +492,10 @@ public class GameServer : MonoBehaviour
         try { _acceptThread?.Join(300); } catch { }
     }
 
-    // ── Helpers UI ────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Actualiza la lista visual de jugadores y el estado del botón Iniciar.
-    /// Solo llamar desde el hilo principal (Update/LateUpdate).
-    /// </summary>
+    // ── Helpers UI ─────────────────────────────────────────────────────────────
     private void RefreshLobbyUI()
     {
-        int count;
-        string list;
+        int count; string list;
         lock (_sessLock)
         {
             count = _sessions.Count;
@@ -354,10 +503,8 @@ public class GameServer : MonoBehaviour
                 _sessions.Select(s =>
                     $"• {(string.IsNullOrEmpty(s.Name) ? $"Jugador {s.Id}" : s.Name)}"));
         }
-
         if (playerListLabel)
             playerListLabel.text = count == 0 ? "Sin jugadores aún..." : list;
-
         if (startGameButton)
             startGameButton.interactable = count >= minPlayers;
     }
@@ -372,7 +519,7 @@ public class GameServer : MonoBehaviour
     private void DumpAllIPs()
     {
         string[] ips = GetAllIPv4s();
-        if (ips.Length == 0) { Log("[Server] No se encontraron IPs válidas."); return; }
+        if (ips.Length == 0) { Log("[Server] No se encontraron IPs."); return; }
         Log("[Server] IPs disponibles:");
         foreach (string ip in ips) Log("  → " + ip);
     }
@@ -384,7 +531,55 @@ public class GameServer : MonoBehaviour
         return defaultPort;
     }
 
-    // ── Detección de IP ───────────────────────────────────────────────────────
+    // ── JSON helpers (sin Newtonsoft) ──────────────────────────────────────────
+
+    /// <summary>Extrae el valor de una clave string del JSON. Ej: "type":"player_move" → "player_move"</summary>
+    public static string ExtractString(string json, string key)
+    {
+        string search = $"\"{key}\"";
+        int ki = json.IndexOf(search, StringComparison.Ordinal);
+        if (ki < 0) return "";
+        int colon = json.IndexOf(':', ki + search.Length);
+        if (colon < 0) return "";
+        int start = json.IndexOf('"', colon + 1);
+        if (start < 0) return "";
+        int end = json.IndexOf('"', start + 1);
+        if (end < 0) return "";
+        return json.Substring(start + 1, end - start - 1);
+    }
+
+    /// <summary>Extrae el valor de una clave numérica del JSON. Ej: "x":34.5 → 34.5f</summary>
+    public static float ExtractFloat(string json, string key)
+    {
+        string search = $"\"{key}\"";
+        int ki = json.IndexOf(search, StringComparison.Ordinal);
+        if (ki < 0) return 0f;
+        int colon = json.IndexOf(':', ki + search.Length);
+        if (colon < 0) return 0f;
+        // Saltar espacios
+        int vi = colon + 1;
+        while (vi < json.Length && (json[vi] == ' ' || json[vi] == '\t')) vi++;
+        // Leer hasta coma, } o espacio
+        int end = vi;
+        while (end < json.Length && json[end] != ',' && json[end] != '}' &&
+               json[end] != ' ' && json[end] != '\n') end++;
+        string numStr = json.Substring(vi, end - vi);
+        return float.TryParse(numStr,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out float val) ? val : 0f;
+    }
+
+    private static string BuildJson(string type, string key, string value)
+        => $"{{\"type\":\"{type}\",\"{key}\":\"{value}\"}}";
+
+    private static string JsonConnectAck(int id)
+    {
+        long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        return $"{{\"type\":\"connect_ack\",\"playerId\":\"P{id}\",\"timestamp\":{ts}}}";
+    }
+
+    // ── Detección de IP ────────────────────────────────────────────────────────
     private static string[] GetAllIPv4s()
     {
         var result = new List<string>();
@@ -424,17 +619,17 @@ public class GameServer : MonoBehaviour
         return ips[0];
     }
 
-    // ── PlayerSession ─────────────────────────────────────────────────────────
+    // ── PlayerSession ──────────────────────────────────────────────────────────
     private class PlayerSession
     {
         public int Id;
         public string Name = "";
         public TcpClient Client;
+        public int Score = 0;
+        public int PowerUpUses = 0;
+        public float PosX, PosZ;
+        public float SpawnX, SpawnZ;
 
-        public PlayerSession(int id, TcpClient client)
-        {
-            Id = id;
-            Client = client;
-        }
+        public PlayerSession(int id, TcpClient client) { Id = id; Client = client; }
     }
 }
