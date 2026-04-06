@@ -48,11 +48,18 @@ namespace RuneRush.Player
 
         public override void FixedUpdate()
         {
-            // Mantener movimiento durante la espera (misma lógica que MovingState)
+            // Mantener movimiento durante la espera, relativo a la cámara
             Vector2 input = Controller.MoveInput;
-            Vector3 move  = new Vector3(input.x, 0f, input.y) * Data.MoveSpeed;
-            move.y = Rb.linearVelocity.y;
-            Rb.linearVelocity = move;
+            if (input.sqrMagnitude <= 0.01f) return;
+
+            float yaw     = Controller.CameraYaw * Mathf.Deg2Rad;
+            Vector3 fwd   = new Vector3(Mathf.Sin(yaw),  0f, Mathf.Cos(yaw));
+            Vector3 right = new Vector3(Mathf.Cos(yaw),  0f, -Mathf.Sin(yaw));
+            Vector3 dir   = (fwd * input.y + right * input.x).normalized;
+
+            Vector3 velocity = dir * Data.MoveSpeed;
+            velocity.y       = Rb.linearVelocity.y;
+            Rb.linearVelocity = velocity;
         }
 
         public override void Exit()
@@ -66,11 +73,11 @@ namespace RuneRush.Player
             switch (evt.Type)
             {
                 case NetworkEventType.CollectConfirm:
-                    // Solo procesar si es la runa que estamos esperando
                     if (evt.RuneId == _pendingRuneId)
                     {
-                        Controller.VFX?.PlayCollect();
-                        Controller.HUD?.OnRuneCollected();
+                        // VFX de recolección — el puntaje lo actualiza GameManager
+                        // cuando procesa el collect_confirm del servidor con newScore.
+                        Controller.VFX?.PlayEffect("collect");
                         ReturnToMovementState();
                     }
                     break;

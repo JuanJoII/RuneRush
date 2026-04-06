@@ -4,49 +4,66 @@ using Unity.Cinemachine;
 namespace RuneRush.Player
 {
     /// <summary>
-    /// CameraController — gira la cámara de Cinemachine con el joystick derecho.
+    /// CameraController — cámara de Cinemachine en tercera persona para móvil.
     ///
-    /// Configuración en Unity:
-    ///   1. En tu Virtual Camera de Cinemachine, agrega el componente
-    ///      CinemachineOrbitalFollow (o usa el preset "Third Person").
-    ///   2. Asigna el Follow y LookAt al transform del jugador local.
-    ///   3. Coloca este script en el mismo GameObject que el Virtual Camera
-    ///      o en cualquier objeto activo en la escena de juego.
-    ///   4. Arrastra la referencia al PlayerController local en el Inspector.
+    /// Configuración en escena:
+    ///   1. Crea un GameObject vacío llamado "PlayerCamera" en la escena de juego
+    ///      (NO dentro del prefab del jugador).
+    ///   2. Agrégale un CinemachineCamera con CinemachineOrbitalFollow.
+    ///   3. Agrégale este script.
+    ///   4. Deja _player vacío en el Inspector — se asigna automáticamente al
+    ///      jugador local cuando GameManager lo instancia.
     ///
-    /// El input viene de PlayerController.LookInput, que el On-Screen Stick
-    /// del joystick derecho alimenta vía el Input Action "Look".
+    /// Auto-asignación:
+    ///   Busca en escena el GameObject cuyo PlayerManager.PlayerId coincida con
+    ///   GameClient.Instance.PlayerId. Si GameManager aún no ha spawnado al
+    ///   jugador (los dos Start() compiten), reintenta cada frame hasta encontrarlo.
     /// </summary>
     public class CameraController : MonoBehaviour
     {
-        [Header("Referencias")]
-        [SerializeField] private PlayerManager _player;
+        [Header("Cinemachine")]
+        [SerializeField] private CinemachineCamera        _vcam;
         [SerializeField] private CinemachineOrbitalFollow _orbital;
 
         [Header("Sensibilidad")]
-        [SerializeField] private float _horizontalSpeed = 180f; // grados por segundo
+        [SerializeField] private float _horizontalSpeed = 180f;
         [SerializeField] private float _verticalSpeed   = 90f;
 
         [Header("Límites verticales")]
         [SerializeField] private float _minVerticalAngle = -10f;
         [SerializeField] private float _maxVerticalAngle =  60f;
 
-        private float _yaw;   // rotación horizontal acumulada
-        private float _pitch; // rotación vertical acumulada
+        // Referencia al jugador local — se puede asignar en Inspector o se
+        // rellena automáticamente si se deja vacío.
+        [Header("(Opcional) Asignación manual")]
+        [SerializeField] private PlayerManager _player;
+
+        private float _yaw;
+        private float _pitch;
+        private bool  _ready = false;
 
         private void Start()
         {
-            // Inicializar con la rotación actual de la cámara
-            if (_orbital != null)
+            // Si ya viene asignado desde el Inspector, usarlo directamente.
+            if (_player != null)
             {
-                _yaw   = _orbital.HorizontalAxis.Value;
-                _pitch = _orbital.VerticalAxis.Value;
+                Attach(_player);
+                return;
             }
+
+            // Si no, iniciar la búsqueda automática.
+            // La búsqueda ocurre en Update hasta que encuentre al jugador local.
+        }
+
+        private void Update()
+        {
+            if (_ready) return;
+            TryFindLocalPlayer();
         }
 
         private void LateUpdate()
         {
-            if (_player == null || _orbital == null) return;
+            if (!_ready || _player == null || _orbital == null) return;
 
             Vector2 look = _player.LookInput;
             if (look.sqrMagnitude >= 0.01f)
@@ -62,10 +79,47 @@ namespace RuneRush.Player
                 _orbital.VerticalAxis.Value   = _pitch;
             }
 
-            // Publicar el yaw actual al PlayerController para que MovingState
-            // pueda calcular el movimiento relativo a la cámara.
-            // Se hace siempre, no solo cuando hay input de cámara.
+            // Publicar yaw al PlayerManager para movimiento relativo a cámara
             _player.CameraYaw = _yaw;
+        }
+
+        // ── Búsqueda automática ───────────────────────────────────────────────
+
+        private void TryFindLocalPlayer()
+        {
+            string localId = GameClient.Instance ? GameClient.Instance.PlayerId : "";
+            if (string.IsNullOrEmpty(localId)) return;
+
+            // Buscar todos los PlayerManager en escena y quedarse con el local
+            foreach (var pm in FindObjectsByType<PlayerManager>(FindObjectsSortMode.None))
+            {
+                if (pm.PlayerId == localId)
+                {
+                    Attach(pm);
+                    return;
+                }
+            }
+            // Si no lo encontró todavía, lo intentará en el próximo frame
+        }
+
+        private void Attach(PlayerManager player)
+        {
+            _player = player;
+
+            if (_vcam != null)
+            {
+                _vcam.Follow  = player.transform;
+                _vcam.LookAt  = player.transform;
+            }
+
+            if (_orbital != null)
+            {
+                _yaw   = _orbital.HorizontalAxis.Value;
+                _pitch = _orbital.VerticalAxis.Value;
+            }
+
+            _ready = true;
+            Debug.Log($"[CameraController] Cámara asignada a {player.PlayerId}");
         }
     }
 }

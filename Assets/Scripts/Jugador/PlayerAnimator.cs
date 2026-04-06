@@ -5,14 +5,10 @@ namespace RuneRush.Player
     /// <summary>
     /// PlayerAnimator — puente entre la máquina de estados y el Animator.
     ///
-    /// No toma decisiones de juego — solo observa el PlayerController
-    /// y traduce el estado actual a parámetros del Animator.
-    ///
-    /// Parámetros que debe tener tu Animator Controller:
-    ///   - "Speed"     : Float  — 0 = idle, 1 = caminando, 2 = boosted
-    ///   - "IsFrogged" : Bool   — true mientras está transformado en rana
-    ///   - "IsLaunched": Bool   — true mientras está siendo impulsado
-    ///   - "CastSpell" : Trigger — se dispara al activar los hechizos
+    /// Parámetros requeridos en el Animator Controller:
+    ///   - "Speed"        : Float   — 0 = idle, 1 = caminando, 2 = boosted
+    ///   - "CastSpellWind": Trigger — animación de hechizo de viento/portal
+    ///   - "CastSpellFrog": Trigger — animación de hechizo de rana
     /// </summary>
     [RequireComponent(typeof(Animator))]
     public class PlayerAnimator : MonoBehaviour
@@ -21,12 +17,9 @@ namespace RuneRush.Player
 
         private Animator _animator;
 
-        // Hashes para no usar strings en Update (más eficiente)
-        private static readonly int SpeedHash      = Animator.StringToHash("Speed");
-        private static readonly int IsFroggedHash  = Animator.StringToHash("IsFrogged");
-        private static readonly int IsLaunchedHash = Animator.StringToHash("IsLaunched");
-        private static readonly int CastSpellWindHash   = Animator.StringToHash("CastSpellWind");
-        private static readonly int CastSpellFrogHash  = Animator.StringToHash("CastSpellFrog");
+        private static readonly int SpeedHash        = Animator.StringToHash("Speed");
+        private static readonly int CastSpellWindHash = Animator.StringToHash("CastSpellWind");
+        private static readonly int CastSpellFrogHash = Animator.StringToHash("CastSpellFrog");
 
         private void Awake()
         {
@@ -36,11 +29,8 @@ namespace RuneRush.Player
         private void Update()
         {
             if (_controller == null || _animator == null) return;
-
             UpdateLocomotion();
         }
-
-        // ── Locomotión ────────────────────────────────────────────────────────
 
         private void UpdateLocomotion()
         {
@@ -50,24 +40,19 @@ namespace RuneRush.Player
             if (current is MovingState)
                 speed = 1f;
             else if (current is BoostedState)
-                speed = 2f;  // animación de correr más rápido
-            else if (current is FroggedState && _controller.MoveInput.sqrMagnitude > 0.01f)
-                speed = 0.5f; // animación de saltar/moverse como rana
+                speed = 2f;
 
-            _animator.SetFloat(SpeedHash, speed, 0.1f, Time.deltaTime); // damping suave
-
-            if (speed == 0f)
-            {
-                _animator.SetFloat(SpeedHash, speed); 
-            }
+            // Damping al acelerar, corte inmediato al parar
+            if (speed > 0f)
+                _animator.SetFloat(SpeedHash, speed, 0.1f, Time.deltaTime);
+            else
+                _animator.SetFloat(SpeedHash, 0f);
         }
 
-        // ── Triggers (llamados desde PlayerController) ────────────────────────
+        /// <summary>Hechizo de viento o portal. Llamar desde GameManager.</summary>
+        public void TriggerSpellWind() => _animator.SetTrigger(CastSpellWindHash);
 
-        /// <summary>Llamar cuando el jugador activa el hechizo de impulso.</summary>
-        public void TriggerTeleport()  => _animator.SetTrigger(CastSpellWindHash);
-
-        /// <summary>Llamar cuando el jugador activa el hechizo de rana.</summary>
-        public void TriggerCastSpell() => _animator.SetTrigger(CastSpellFrogHash);
+        /// <summary>Hechizo de rana. Llamar desde GameManager.</summary>
+        public void TriggerSpellFrog() => _animator.SetTrigger(CastSpellFrogHash);
     }
 }

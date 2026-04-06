@@ -192,7 +192,8 @@ namespace RuneRush.Player
         {
             _powerupReady      = ready;
             _activePowerupType = ready ? powerupType : "";
-            HUD?.SetPowerupButtonInteractable(ready);
+            // Notificar al HUD: si ready pasa el tipo, si no pasa vacío para desactivar
+            HUD?.SetPowerupReady(ready ? powerupType : "");
         }
     }
 }

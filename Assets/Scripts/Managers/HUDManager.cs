@@ -4,82 +4,160 @@ using TMPro;
 namespace RuneRush.Player
 {
     // ══════════════════════════════════════════════════════════════════════════
-    // HUDManager — actualiza la interfaz del jugador local.
-    // Los estados llaman métodos semánticos; aquí conectas tus elementos de UI.
+    // HUDManager
     // ══════════════════════════════════════════════════════════════════════════
     public class HUDManager : MonoBehaviour
     {
-        [Header("Puntaje y tiempo")]
-        [SerializeField] private TMP_Text _scoreLabel;
+        // ── Puntajes ──────────────────────────────────────────────────────────
+        [Header("Puntaje propio")]
+        [SerializeField] private TMP_Text _myScoreLabel;
+ 
+        [Header("Puntajes de rivales (orden de aparición en pantalla)")]
+        [SerializeField] private TMP_Text[] _rivalScoreLabels = new TMP_Text[3];
+ 
+        // ── Tiempo ────────────────────────────────────────────────────────────
+        [Header("Tiempo")]
         [SerializeField] private TMP_Text _timerLabel;
-
+ 
+        // ── Indicadores de efecto activo ──────────────────────────────────────
+        [Header("Indicadores de efecto")]
+        [SerializeField] private GameObject _boostIndicator;
+        [SerializeField] private GameObject _frogIndicator;
+        [SerializeField] private GameObject _launchIndicator;
+ 
+        // ── Botón de power-up ─────────────────────────────────────────────────
         [Header("Botón de power-up")]
         [SerializeField] private UnityEngine.UI.Button _powerupButton;
         [SerializeField] private UnityEngine.UI.Image  _powerupButtonIcon;
-
-        [Header("Efectos activos")]
-        [SerializeField] private GameObject _frogEffectIndicator;
-        [SerializeField] private GameObject _launchEffectIndicator;
-
-        private int _score = 0;
-
-        // ── Puntaje ───────────────────────────────────────────────────────────
-        public void OnRuneCollected(int points = 1)
+ 
+        [Header("Sprites del botón (en orden: frog, launch, boost, portal)")]
+        [SerializeField] private Sprite _spriteFrog;
+        [SerializeField] private Sprite _spriteLaunch;
+        [SerializeField] private Sprite _spriteBoost;
+        [SerializeField] private Sprite _spritePortal;
+ 
+        // ── Panel de resultados ───────────────────────────────────────────────
+        [Header("Resultados")]
+        [SerializeField] private GameObject _resultsPanel;
+        [SerializeField] private TMP_Text   _resultsLabel;
+ 
+        // ── Estado interno ────────────────────────────────────────────────────
+        // Mapa playerId → índice de label de rival (se llena al inicio de partida)
+        private readonly System.Collections.Generic.Dictionary<string, int> _rivalIndex = new();
+        private string _localId = "";
+ 
+        private void Start()
         {
-            _score += points;
-            if (_scoreLabel) _scoreLabel.text = _score.ToString();
+            _localId = GameClient.Instance ? GameClient.Instance.PlayerId : "";
         }
-
-        public void SetScore(int score)
+ 
+        // ── Registro de jugadores ─────────────────────────────────────────────
+ 
+        /// <summary>
+        /// Llamar desde GameManager al inicio de partida para cada jugador remoto,
+        /// en el mismo orden en que aparecen en match_start.
+        /// Así cada label de rival queda asociado a un playerId.
+        /// </summary>
+        public void RegisterRival(string playerId, string displayName)
         {
-            _score = score;
-            if (_scoreLabel) _scoreLabel.text = _score.ToString();
+            if (playerId == _localId) return;
+            int idx = _rivalIndex.Count;
+            if (idx >= _rivalScoreLabels.Length) return;
+ 
+            _rivalIndex[playerId] = idx;
+            if (_rivalScoreLabels[idx])
+                _rivalScoreLabels[idx].text = $"{displayName}: 0";
         }
-
-        // ── Temporizador (actualizado por el servidor vía state_update) ───────
+ 
+        // ── Puntajes ──────────────────────────────────────────────────────────
+ 
+        public void SetMyScore(int score)
+        {
+            if (_myScoreLabel) _myScoreLabel.text = $"Runas: {score}";
+        }
+ 
+        /// <summary>
+        /// Actualiza el puntaje de cualquier jugador.
+        /// Si es el local actualiza su label, si es rival actualiza el label correspondiente.
+        /// </summary>
+        public void SetScore(string playerId, int score)
+        {
+            if (playerId == _localId)
+            {
+                SetMyScore(score);
+                return;
+            }
+ 
+            if (_rivalIndex.TryGetValue(playerId, out int idx)
+                && idx < _rivalScoreLabels.Length
+                && _rivalScoreLabels[idx])
+            {
+                _rivalScoreLabels[idx].text = $"P{idx + 1}: {score}";
+            }
+        }
+ 
+        // ── Tiempo ────────────────────────────────────────────────────────────
         public void SetTimer(float seconds)
         {
-            if (_timerLabel)
-                _timerLabel.text = $"{Mathf.CeilToInt(seconds)}";
+            if (_timerLabel) _timerLabel.text = $"{Mathf.CeilToInt(seconds):00}s";
         }
-
-        // ── Botón de power-up ─────────────────────────────────────────────────
-
-        /// <summary>
-        /// Activa o desactiva el botón de power-up.
-        /// Lo llama PlayerController.SetPowerupReady().
-        /// </summary>
-        public void SetPowerupButtonInteractable(bool active)
-        {
-            if (_powerupButton) _powerupButton.interactable = active;
-        }
-
-        /// <summary>
-        /// Cambia el ícono del botón según el power-up recogido.
-        /// Pasar null para limpiar el ícono al consumirse.
-        /// </summary>
-        public void SetPowerupIcon(Sprite icon)
-        {
-            if (_powerupButtonIcon) _powerupButtonIcon.sprite = icon;
-        }
-
-        // ── Indicadores de efecto activo ──────────────────────────────────────
+ 
+        // ── Indicadores de efecto ─────────────────────────────────────────────
         public void ShowEffectIcon(string effectId)
         {
             switch (effectId)
             {
-                case "frog":     if (_frogEffectIndicator)   _frogEffectIndicator.SetActive(true);   break;
-                case "launched": if (_launchEffectIndicator) _launchEffectIndicator.SetActive(true); break;
+                case "boost":    if (_boostIndicator)  _boostIndicator.SetActive(true);  break;
+                case "frog":     if (_frogIndicator)   _frogIndicator.SetActive(true);   break;
+                case "launched": if (_launchIndicator) _launchIndicator.SetActive(true); break;
             }
         }
-
+ 
         public void HideEffectIcon(string effectId)
         {
             switch (effectId)
             {
-                case "frog":     if (_frogEffectIndicator)   _frogEffectIndicator.SetActive(false);   break;
-                case "launched": if (_launchEffectIndicator) _launchEffectIndicator.SetActive(false); break;
+                case "boost":    if (_boostIndicator)  _boostIndicator.SetActive(false);  break;
+                case "frog":     if (_frogIndicator)   _frogIndicator.SetActive(false);   break;
+                case "launched": if (_launchIndicator) _launchIndicator.SetActive(false); break;
             }
+        }
+ 
+        // ── Botón de power-up ─────────────────────────────────────────────────
+ 
+        /// <summary>
+        /// Activa el botón y cambia su ícono según el tipo de power-up disponible.
+        /// Pasar powerupType = "" para desactivarlo.
+        /// </summary>
+        public void SetPowerupReady(string powerupType)
+        {
+            bool hasType = !string.IsNullOrEmpty(powerupType);
+            if (_powerupButton) _powerupButton.interactable = hasType;
+ 
+            if (!_powerupButtonIcon) return;
+ 
+            _powerupButtonIcon.sprite = powerupType switch
+            {
+                "powerup_rana"    => _spriteFrog,
+                "powerup_impulso" => _spriteLaunch,
+                "powerup_viento"  => _spriteBoost,
+                "portal_propio"   => _spritePortal,
+                _                 => null
+            };
+ 
+            _powerupButtonIcon.enabled = hasType;
+        }
+ 
+        // ── Resultados ────────────────────────────────────────────────────────
+        public void ShowResults(string content)
+        {
+            if (_resultsPanel) _resultsPanel.SetActive(true);
+            if (_resultsLabel) _resultsLabel.text = content;
+        }
+ 
+        public void HideResults()
+        {
+            if (_resultsPanel) _resultsPanel.SetActive(false);
         }
     }
 }
