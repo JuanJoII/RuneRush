@@ -93,6 +93,17 @@ public class GameClient : MonoBehaviour
         new Thread(() => ConnectThread(ip, port, name)) { IsBackground = true }.Start();
     }
 
+    // --- NUEVA FUNCIÓN PARA EL HOST ---
+    public void ConnectAsHost(string ip, int port, string name)
+    {
+        if (Connected) return;
+
+        PlayerName = name;
+        SetStatus($"Conectando como Host a {ip}:{port}...");
+
+        new Thread(() => ConnectThread(ip, port, name)) { IsBackground = true }.Start();
+    }
+
     public void OnDisconnect() { Disconnect(); SetStatus("Desconectado."); }
 
     private void ConnectThread(string ip, int port, string name)
@@ -203,14 +214,13 @@ public class GameClient : MonoBehaviour
 
         long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-        // Versión SEGURA sin :F2 dentro del interpolado
         string msg = "{" +
             $"\"type\":\"player_move\"," +
             $"\"playerId\":\"{PlayerId}\"," +
             $"\"position\":{{" +
-                $"\"x\":{x}," +           // sin :F2
+                $"\"x\":{x}," +
                 $"\"y\":0," +
-                $"\"z\":{z}" +            // sin :F2
+                $"\"z\":{z}" +
             "}}," +
             $"\"state\":\"{state}\"," +
             $"\"timestamp\":{ts}" +

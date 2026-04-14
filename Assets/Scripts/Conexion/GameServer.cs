@@ -29,6 +29,7 @@ public class GameServer : MonoBehaviour
     [SerializeField] private TMP_Text ipLabel;
     [SerializeField] private TMP_Text portLabel;
     [SerializeField] private TMP_InputField portField;
+    [SerializeField] private TMP_InputField hostNameField; // <-- NUEVO CAMPO PARA EL NOMBRE DEL HOST
     [SerializeField] private TMP_Text logArea;
     [SerializeField] private TMP_Text playerListLabel;
     [SerializeField] private Button startGameButton;
@@ -125,6 +126,19 @@ public class GameServer : MonoBehaviour
             DumpAllIPs();
             _acceptThread = new Thread(AcceptLoop) { IsBackground = true };
             _acceptThread.Start();
+
+            // --- ACTUALIZADO: El Host usa su nombre personalizado ---
+            if (GameClient.Instance != null)
+            {
+                // Leemos el nombre del input. Si está vacío, por defecto será "Host"
+                string hName = "Host";
+                if (hostNameField != null && !string.IsNullOrWhiteSpace(hostNameField.text))
+                {
+                    hName = hostNameField.text.Trim();
+                }
+
+                GameClient.Instance.ConnectAsHost("127.0.0.1", port, hName);
+            }
         }
         catch (Exception ex) { Log($"[Server] Error: {ex.Message}"); }
     }
@@ -242,26 +256,23 @@ public class GameServer : MonoBehaviour
         _meteorCounter = 0;
 
         var rng = new System.Random();
-        // === BLOQUE CORREGIDO - Reemplaza el anterior completo ===
         var playersParts = new List<string>();
         lock (_sessLock)
         {
-            var rnga = new System.Random();   // mejor crear uno aquí
+            var rnga = new System.Random();
 
             foreach (var s in _sessions)
             {
                 s.Score = 0;
                 s.PortalUses = portalUses;
 
-                // Generar posiciones correctamente
                 s.SpawnX = (float)(rnga.NextDouble() * (mapSize - 10f)) + 5f;
                 s.SpawnZ = (float)(rnga.NextDouble() * (mapSize - 10f)) + 5f;
 
-                // JSON seguro (SIN :F2 dentro del f-string)
                 string playerJson = "{" +
                     $"\"id\":\"P{s.Id}\"," +
-                    $"\"spawnX\":{s.SpawnX}," +           // sin :F2
-                    $"\"spawnZ\":{s.SpawnZ}" +            // sin :F2
+                    $"\"spawnX\":{s.SpawnX}," +
+                    $"\"spawnZ\":{s.SpawnZ}" +
                     "}";
 
                 playersParts.Add(playerJson);
@@ -322,7 +333,6 @@ public class GameServer : MonoBehaviour
         int scoreDelta = objectType == "runa_comun" ? 1 : 0;
         sess.Score += scoreDelta;
 
-        // Si es powerup_viento, añadir duración para que el cliente aplique el boost
         string extra = objectType == "powerup_viento"
             ? $",\"vientoDuration\":{vientoDuration},\"vfx\":\"wind_trail_green\""
             : "";
@@ -360,7 +370,6 @@ public class GameServer : MonoBehaviour
         float destX = (float)(rng.NextDouble() * (mapSize - 10f)) + 5f;
         float destZ = (float)(rng.NextDouble() * (mapSize - 10f)) + 5f;
 
-        // JSON LIMPIO y seguro (misma forma que usamos con meteoros y zonas)
         string msg = "{" +
             $"\"type\":\"powerup_confirm\"," +
             $"\"sessionId\":\"{SessionId}\"," +
@@ -385,7 +394,6 @@ public class GameServer : MonoBehaviour
         string meteorId = $"METEOR_{_meteorCounter++}";
         long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-        // JSON muy seguro y limpio
         string msg = $"{{\"type\":\"meteor_spawn\",\"sessionId\":\"{SessionId}\"," +
                     $"\"meteorId\":\"{meteorId}\"," +
                     $"\"targetPosition\":{{\"x\":{tx},\"z\":{tz}}}," +
@@ -407,7 +415,6 @@ public class GameServer : MonoBehaviour
 
         long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-        // JSON LIMPIO y seguro para zone_blocked
         string msg = "{" +
             $"\"type\":\"zone_blocked\"," +
             $"\"sessionId\":\"{SessionId}\"," +
@@ -537,7 +544,6 @@ public class GameServer : MonoBehaviour
     }
 
     // JSON helpers
-    // JSON helpers — VERSIÓN MEJORADA (reemplaza las antiguas)
     public static string ExtractString(string json, string key)
     {
         string search = $"\"{key}\":\"";
@@ -571,7 +577,6 @@ public class GameServer : MonoBehaviour
 
     public static float ExtractFloatInObject(string json, string objectKey, string fieldKey)
     {
-        // Busca el objeto completo {"x":..., "z":...}
         string search = $"\"{objectKey}\":";
         int objStart = json.IndexOf(search, StringComparison.Ordinal);
         if (objStart < 0) return 0f;
