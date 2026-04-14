@@ -27,7 +27,7 @@ namespace RuneRush.Player
  
         // ── Botón de power-up ─────────────────────────────────────────────────
         [Header("Botón de power-up")]
-        [SerializeField] private UnityEngine.UI.Button _powerupButton;
+        [SerializeField] private GameObject            _powerupButtonObject; // el GameObject completo del botón
         [SerializeField] private UnityEngine.UI.Image  _powerupButtonIcon;
  
         [Header("Sprites del botón (en orden: frog, launch, boost, portal)")]
@@ -131,8 +131,9 @@ namespace RuneRush.Player
         /// </summary>
         public void SetPowerupReady(string powerupType)
         {
-            bool hasType = !string.IsNullOrEmpty(powerupType);
-            if (_powerupButton) _powerupButton.interactable = hasType;
+            bool has = !string.IsNullOrEmpty(powerupType);
+ 
+            if (_powerupButtonObject) _powerupButtonObject.SetActive(has);
  
             if (!_powerupButtonIcon) return;
  
@@ -144,8 +145,6 @@ namespace RuneRush.Player
                 "portal_propio"   => _spritePortal,
                 _                 => null
             };
- 
-            _powerupButtonIcon.enabled = hasType;
         }
  
         // ── Resultados ────────────────────────────────────────────────────────

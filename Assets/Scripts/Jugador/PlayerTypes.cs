@@ -55,6 +55,6 @@ namespace RuneRush.Player
         public float CollectTimeout  = 2f;   // Segundos antes de cancelar si el servidor no responde
 
         [Header("Launched")]
-        public float LaunchDrag      = 3f;   // Cuánta resistencia se aplica al frenar el impulso
+        public float LaunchDrag      = 0f;   // Cuánta resistencia se aplica al frenar el impulso
     }
 }

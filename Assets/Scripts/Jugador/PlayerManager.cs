@@ -154,6 +154,16 @@ namespace RuneRush.Player
         /// Llamado por GameManager cuando collect_confirm trae objectType "powerup_viento".
         /// Configura la duración del boost y transiciona al estado correspondiente.
         /// </summary>
+        /// <summary>
+        /// Asigna el HUDManager en runtime.
+        /// Llamado por GameManager al spawnear el jugador local,
+        /// ya que HUDManager vive en escena y el prefab no puede referenciarlo.
+        /// </summary>
+        public void SetHUDManager(HUDManager hud)
+        {
+            _hud = hud;
+        }
+
         public void ApplySpeedBoost(float duration)
         {
             Data.BoostDuration = duration;
@@ -173,26 +183,66 @@ namespace RuneRush.Player
         private void OnLookCanceled(InputAction.CallbackContext ctx)
             => LookInput = Vector2.zero;
 
+        [Header("Power-up VFX")]
+        [SerializeField] private float _windPushDuration  = 1.5f;
+        [SerializeField] private float _frogSpellDuration = 1.5f;
+        [SerializeField] private float _windPushDistance  = 2f;  // distancia frente al jugador
+
         private void OnActivatePowerup(InputAction.CallbackContext ctx)
         {
-            // Solo procesar si hay un power-up disponible
             if (!_powerupReady) return;
-            GameClient.Instance?.SendPowerupActivate(_activePowerupType);
+
+            switch (_activePowerupType)
+            {
+                case "powerup_viento":
+                    ApplySpeedBoost(Data.BoostDuration);
+                    Anim?.TriggerSpellWind();
+                    SetPowerupReady("", false);
+                    break;
+
+                case "powerup_impulso":
+                    Anim?.TriggerSpellWind();
+                    SpawnPowerupVFX(PowerupVFX.VFXType.WindPush, _windPushDuration);
+                    SetPowerupReady("", false);
+                    break;
+
+                case "powerup_rana":
+                    Anim?.TriggerSpellFrog();
+                    SpawnPowerupVFX(PowerupVFX.VFXType.FrogSpell, _frogSpellDuration);
+                    SetPowerupReady("", false);
+                    break;
+
+                case "portal_propio":
+                    GameClient.Instance?.SendPowerupActivate("portal_propio");
+                    break;
+            }
+        }
+
+        private void SpawnPowerupVFX(PowerupVFX.VFXType type, float duration)
+        {
+            if (VFX == null) return;
+
+            // Spawnear frente al jugador a _windPushDistance unidades
+            Vector3    spawnPos = Rb.position + transform.forward * _windPushDistance;
+            Quaternion spawnRot = transform.rotation;
+
+            if (type == PowerupVFX.VFXType.WindPush)
+                VFX.SpawnWindPushVFX(spawnPos, spawnRot, PlayerId, duration);
+            else
+                VFX.SpawnFrogSpellVFX(spawnPos, spawnRot, PlayerId, duration);
         }
 
         // ── API power-up ──────────────────────────────────────────────────────
         private bool   _powerupReady      = false;
         private string _activePowerupType = "";
 
-        /// <summary>
-        /// Llamado por GameManager cuando el jugador recoge un power-up activable
-        /// (por ahora solo "portal_propio"). Activa el botón en HUD.
-        /// </summary>
+        /// <summary>True si el jugador tiene un power-up cargado sin usar.</summary>
+        public bool HasPowerup => _powerupReady;
+
         public void SetPowerupReady(string powerupType, bool ready)
         {
             _powerupReady      = ready;
             _activePowerupType = ready ? powerupType : "";
-            // Notificar al HUD: si ready pasa el tipo, si no pasa vacío para desactivar
             HUD?.SetPowerupReady(ready ? powerupType : "");
         }
     }

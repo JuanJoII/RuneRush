@@ -18,13 +18,17 @@ using UnityEngine;
 /// </summary>
 public class GameManager : MonoBehaviour
 {
+    // ── Singleton ─────────────────────────────────────────────────────────────
+    public static GameManager Instance { get; private set; }
+
     // ── Prefabs ───────────────────────────────────────────────────────────────
     [Header("Prefabs de jugador (uno por color, en orden de asignación)")]
     [SerializeField] private GameObject[] playerPrefabs = new GameObject[4];
 
     [Header("Prefabs de objetos")]
     [SerializeField] private GameObject runaPrefab;
-    [SerializeField] private GameObject vientoPrefab;
+    [SerializeField] private GameObject powerupPrefab;
+    [SerializeField] private GameObject portalPrefab;  // cualquier power-up recogible
 
     // ── Managers ──────────────────────────────────────────────────────────────
     [Header("Referencias")]
@@ -36,6 +40,7 @@ public class GameManager : MonoBehaviour
     private readonly Dictionary<string, GameObject> _objects  = new();
     private readonly Dictionary<string, GameObject> _zonas    = new();
     private readonly Dictionary<string, GameObject> _meteoros = new();
+    private readonly Dictionary<string, Vector3>    _portals  = new(); // portalId → posición
 
     private GameObject _localPlayer;
     private string     _localId       = "";
@@ -44,6 +49,12 @@ public class GameManager : MonoBehaviour
     private bool       _matchRunning  = false;
 
     // ── Ciclo Unity ───────────────────────────────────────────────────────────
+    private void Awake()
+    {
+        if (Instance != null && Instance != this) { Destroy(gameObject); return; }
+        Instance = this;
+    }
+
     private void Start()
     {
         _localId = GameClient.Instance ? GameClient.Instance.PlayerId : "";
@@ -58,6 +69,8 @@ public class GameManager : MonoBehaviour
             GameClient.Instance.OnZoneBlocked.AddListener(OnZoneBlocked);
             GameClient.Instance.OnZoneExpired.AddListener(OnZoneExpired);
             GameClient.Instance.OnMatchEnd.AddListener(OnMatchEnd);
+            // Portal ambiental — tu amigo necesita agregar este evento en GameClient
+            // GameClient.Instance.OnPortalSpawn.AddListener(OnPortalSpawn);
         }
 
         string matchJson = GameClient.Instance ? GameClient.Instance.PendingMatchStart : "";
@@ -76,6 +89,7 @@ public class GameManager : MonoBehaviour
 
     private void OnDestroy()
     {
+        if (Instance == this) Instance = null;
         if (!GameClient.Instance) return;
         GameClient.Instance.OnPlayerMove.RemoveListener(OnPlayerMove);
         GameClient.Instance.OnCollectConfirm.RemoveListener(OnCollectConfirm);
@@ -106,6 +120,7 @@ public class GameManager : MonoBehaviour
 
         ParseAndSpawnPlayers(json);
         ParseAndSpawnObjects(json);
+        SpawnPortalesDeterministicos();
     }
 
     private void InitDemo()
@@ -117,6 +132,50 @@ public class GameManager : MonoBehaviour
         SpawnPlayer("P1", 90f, 90f, isLocal: false);
         SpawnObject("RUNE_0",  50f, 50f, "runa_comun");
         SpawnObject("VIENTO_0", 30f, 70f, "powerup_viento");
+        SpawnPortalesDeterministicos();
+    }
+
+    /// <summary>
+    /// Spawna portales en posiciones fijas conocidas por todos los clientes.
+    /// No necesita coordinación con el servidor.
+    /// Los portales se crean en pares: entrar en uno lleva al otro.
+    /// </summary>
+    private void SpawnPortalesDeterministicos()
+    {
+        // Pares de portales (posXA, posZA, posXB, posZB)
+        (float, float, float, float)[] pairs =
+        {
+            (20f, 20f,  80f, 80f),
+            (20f, 80f,  80f, 20f),
+            (50f, 10f,  50f, 90f),
+        };
+
+        int portalIndex = 0;
+        foreach (var (ax, az, bx, bz) in pairs)
+        {
+            string idA = $"PORTAL_{portalIndex}A";
+            string idB = $"PORTAL_{portalIndex}B";
+
+            SpawnPortalLocal(idA, idB, ax, az);
+            SpawnPortalLocal(idB, idA, bx, bz);
+            portalIndex++;
+        }
+    }
+
+    private void SpawnPortalLocal(string portalId, string pairId, float px, float pz)
+    {
+        float groundY = SnapToGroundY(px, pz);
+        Vector3 pos   = new Vector3(px, groundY, pz);
+        _portals[portalId] = pos;
+
+        GameObject go = portalPrefab
+            ? Instantiate(portalPrefab, pos, Quaternion.identity)
+            : CreateDebugSphere("Portal_" + portalId, pos, new Color(0.5f, 0f, 1f), 1f);
+
+        go.name = "Portal_" + portalId;
+        var portal = go.GetComponent<PortalObject>() ?? go.AddComponent<PortalObject>();
+        portal.PortalId = portalId;
+        portal.PairId   = pairId;
     }
 
     // ── Spawn de jugadores ────────────────────────────────────────────────────
@@ -133,18 +192,60 @@ public class GameManager : MonoBehaviour
         }
     }
 
+    // Máscara de suelo — debe coincidir con la del RemotePlayerSync
+    private static readonly LayerMask GroundMask = 1 << 6;
+
+    /// <summary>
+    /// Dado un punto XZ, devuelve la Y real del suelo usando raycast.
+    /// Si el punto cae en un hueco entre meshes, busca en espiral hasta
+    /// encontrar suelo cercano. Si no encuentra nada, retorna fallbackY.
+    /// </summary>
+    private static float SnapToGroundY(float x, float z, float fallbackY = 0f, float pivotOffset = 0f)
+    {
+        // Intentar en el punto exacto primero
+        if (TryRaycastGround(x, z, out float y))
+            return y + pivotOffset;
+
+        // Si falla, buscar en espiral con pasos de 1 unidad hasta radio 5
+        float[] offsets = { 1f, 2f, 3f, 4f, 5f };
+        Vector2[] dirs  = {
+            Vector2.right, Vector2.left, Vector2.up, Vector2.down,
+            new Vector2(1,1).normalized, new Vector2(-1,1).normalized,
+            new Vector2(1,-1).normalized, new Vector2(-1,-1).normalized
+        };
+
+        foreach (float dist in offsets)
+            foreach (Vector2 dir in dirs)
+                if (TryRaycastGround(x + dir.x * dist, z + dir.y * dist, out y))
+                    return y + pivotOffset;
+
+        // Sin suelo encontrado en ningún punto cercano
+        return fallbackY;
+    }
+
+    private static bool TryRaycastGround(float x, float z, out float groundY)
+    {
+        Vector3 origin = new Vector3(x, 200f, z);
+        if (Physics.Raycast(origin, Vector3.down, out RaycastHit hit, 400f, GroundMask))
+        {
+            groundY = hit.point.y;
+            return true;
+        }
+        groundY = 0f;
+        return false;
+    }
+
     private void SpawnPlayer(string pid, float x, float z, bool isLocal)
     {
-        // Elegir prefab por índice — cada jugador recibe un color diferente.
-        // Si no hay prefabs asignados se crea una cápsula de primitiva como fallback.
+        float groundY = SnapToGroundY(x, z, fallbackY: 1f, pivotOffset: 0f);
+
         GameObject prefab = (_prefabIndex < playerPrefabs.Length)
-            ? playerPrefabs[_prefabIndex]
-            : null;
+            ? playerPrefabs[_prefabIndex] : null;
         _prefabIndex++;
 
         GameObject go = prefab
-            ? Instantiate(prefab, new Vector3(x, 1f, z), Quaternion.identity)
-            : CreateCapsule(pid, new Vector3(x, 1f, z));
+            ? Instantiate(prefab, new Vector3(x, groundY, z), Quaternion.identity)
+            : CreateCapsule(pid, new Vector3(x, groundY, z));
 
         go.name = pid;
         AddNameTag(go, isLocal ? $"{pid} (tú)" : pid);
@@ -152,15 +253,45 @@ public class GameManager : MonoBehaviour
         if (isLocal)
         {
             var pm = go.GetComponent<PlayerManager>();
-            if (pm) pm.PlayerId = pid;
+            if (pm != null)
+            {
+                pm.PlayerId = pid;
+                // Conectar HUDManager al PlayerController en runtime
+                // (HUDManager vive en escena, PlayerController en prefab)
+                pm.SetHUDManager(hudManager);
+            }
             _localPlayer = go;
+
+            var strayRpc = go.GetComponent<RemotePlayerSync>();
+            if (strayRpc) strayRpc.enabled = false;
         }
         else
         {
+            // ── Desactivar todo lo que es exclusivo del jugador local ─────────
+
+            // 1. PlayerManager — evita que el input del joystick mueva al remoto
+            var pm = go.GetComponent<PlayerManager>();
+            if (pm) pm.enabled = false;
+
+            // 2. NetworkEventHandler — evita que procese eventos ajenos
+            var neh = go.GetComponent<NetworkEventHandler>();
+            if (neh) neh.enabled = false;
+
+            // 3. PlayerAnimator — RemotePlayerSync maneja el Animator directamente
+            var anim = go.GetComponent<PlayerAnimator>();
+            if (anim) anim.enabled = false;
+
+            // 4. Rigidbody — la posición la mueve RemotePlayerSync vía transform,
+            //    no la física. isKinematic evita que el motor físico interfiera.
+            var rb = go.GetComponent<Rigidbody>();
+            if (rb) rb.isKinematic = true;
+
+            // 5. Agregar RemotePlayerSync si no está en el prefab
             var rpc = go.GetComponent<RemotePlayerSync>()
                    ?? go.AddComponent<RemotePlayerSync>();
+            rpc.enabled  = true;
             rpc.PlayerId = pid;
-            // Registrar en HUD para que el label de rival quede asignado
+
             hudManager?.RegisterRival(pid, pid);
         }
 
@@ -183,13 +314,16 @@ public class GameManager : MonoBehaviour
 
     private void SpawnObject(string id, float x, float z, string objectType)
     {
+        // Los coleccionables flotan ligeramente sobre el suelo (0.5f de offset)
+        float groundY = SnapToGroundY(x, z, fallbackY: 0.5f, pivotOffset: 5f);
+
         GameObject go = objectType == "powerup_viento"
-            ? (vientoPrefab
-                ? Instantiate(vientoPrefab, new Vector3(x, 0.5f, z), Quaternion.identity)
-                : vfxController.CreateSphere(id, new Vector3(x, 0.5f, z), new Color(0.4f, 0.9f, 1f), 0.6f))
+            ? (powerupPrefab
+                ? Instantiate(powerupPrefab, new Vector3(x, groundY, z), Quaternion.identity)
+                : CreateDebugSphere(id, new Vector3(x, groundY, z), new Color(0.4f, 0.9f, 1f), 0.6f))
             : (runaPrefab
-                ? Instantiate(runaPrefab, new Vector3(x, 0.5f, z), Quaternion.identity)
-                : vfxController.CreateSphere(id, new Vector3(x, 0.5f, z), new Color(1f, 0.85f, 0.1f), 0.4f));
+                ? Instantiate(runaPrefab, new Vector3(x, groundY, z), Quaternion.identity)
+                : CreateDebugSphere(id, new Vector3(x, groundY, z), new Color(1f, 0.85f, 0.1f), 0.4f));
 
         go.name = id;
 
@@ -237,23 +371,20 @@ public class GameManager : MonoBehaviour
         // Solo actualizar HUD y aplicar efectos si es el jugador local
         if (pid != _localId)
         {
-            // Actualizar puntaje del rival en HUD
             hudManager?.SetScore(pid, newScore);
             return;
         }
 
         if (objectType == "powerup_viento")
         {
-            float duration = GameServer.ExtractFloat(json, "vientoDuration");
-            if (duration <= 0f) duration = 5f;
-
             var pm = _localPlayer ? _localPlayer.GetComponent<PlayerManager>() : null;
-            if (pm)
+            if (pm != null)
             {
-                pm.ApplySpeedBoost(duration);
-                pm.Anim?.TriggerSpellWind();
+                // Asignar power-up aleatorio — el jugador lo activa cuando quiera
+                string[] available = { "powerup_viento", "portal_propio" };
+                string chosen = available[UnityEngine.Random.Range(0, available.Length)];
+                pm.SetPowerupReady(chosen, true);
             }
-            hudManager?.ShowEffectIcon("boost");
         }
         else // runa_comun
         {
@@ -339,9 +470,38 @@ public class GameManager : MonoBehaviour
         GameObject zona = vfxController
             ? vfxController.SpawnZona(meteorId, px, pz, radius)
             : null;
-
         if (zona != null)
             _zonas[meteorId] = zona;
+
+        // ── Comprobar si el jugador local está dentro del radio de impacto ─────
+        if (_localPlayer == null) return;
+
+        Vector3 impactCenter = new Vector3(px, _localPlayer.transform.position.y, pz);
+        float   distToPlayer = Vector3.Distance(_localPlayer.transform.position, impactCenter);
+
+        if (distToPlayer <= radius)
+        {
+            var pm = _localPlayer.GetComponent<PlayerManager>();
+            if (pm == null) return;
+
+            // Calcular dirección del impulso: desde el centro hacia el jugador
+            Vector3 dir = (_localPlayer.transform.position - impactCenter).normalized;
+            // Si el jugador está justo en el centro, lanzar en una dirección aleatoria
+            if (dir == Vector3.zero) dir = new Vector3(1f, 0f, 0f);
+
+            // Fuerza proporcional a la cercanía — más cerca = más fuerte
+            float proximity  = 1f - (distToPlayer / radius); // 0..1
+            float forceMag   = Mathf.Lerp(100f, 180f, proximity);
+            Vector3 force    = (dir + Vector3.up * 0.4f).normalized * forceMag;
+
+            pm.OnNetworkEvent(new RuneRush.Player.NetworkEvent
+            {
+                Type           = RuneRush.Player.NetworkEventType.EffectApplied,
+                Effect         = RuneRush.Player.EffectType.Launched,
+                LaunchForce    = force,
+                EffectDuration = 0.8f,
+            });
+        }
     }
 
     private void OnZoneExpired(string json)
@@ -374,6 +534,99 @@ public class GameManager : MonoBehaviour
         hudManager?.ShowResults(sb.ToString());
     }
 
+    // ── Portales ambientales ──────────────────────────────────────────────────
+
+    public void OnPortalSpawn(string json)
+    {
+        string arr = ExtractArray(json, "portals");
+        foreach (string entry in SplitJsonObjects(arr))
+        {
+            string portalId = GameServer.ExtractString(entry, "id");
+            string pairId   = GameServer.ExtractString(entry, "pairId");
+            float  px       = GameServer.ExtractFloat(entry, "x");
+            float  pz       = GameServer.ExtractFloat(entry, "z");
+            float  groundY  = SnapToGroundY(px, pz);
+
+            Vector3 pos = new Vector3(px, groundY, pz);
+            _portals[portalId] = pos;
+
+            GameObject go = portalPrefab
+                ? Instantiate(portalPrefab, pos, Quaternion.identity)
+                : CreateDebugSphere("Portal_" + portalId, pos, new Color(0.5f, 0f, 1f), 1f);
+
+            go.name = "Portal_" + portalId;
+            var portal = go.GetComponent<PortalObject>() ?? go.AddComponent<PortalObject>();
+            portal.PortalId = portalId;
+            portal.PairId   = pairId;
+        }
+    }
+
+    public void OnLocalPlayerEnterPortal(string portalId, string pairId,
+                                          RuneRush.Player.PlayerManager pm)
+    {
+        if (!_portals.TryGetValue(pairId, out Vector3 dest)) return;
+
+        var rb = pm.GetComponent<Rigidbody>();
+        if (rb) rb.position = dest;
+        else    pm.transform.position = dest;
+
+        pm.VFX?.PlayEffect("teleport_out");
+    }
+
+    public void OnPowerupVFXHit(RuneRush.Player.PowerupVFX.VFXType type,
+                                  string attackerId, string targetId)
+    {
+        if (targetId == _localId)
+        {
+            // El jugador local fue golpeado — aplicar estado directamente
+            var pm = _localPlayer ? _localPlayer.GetComponent<RuneRush.Player.PlayerManager>() : null;
+            if (pm == null) return;
+
+            if (type == RuneRush.Player.PowerupVFX.VFXType.WindPush)
+            {
+                if (!_players.TryGetValue(attackerId, out GameObject attacker)) return;
+                Vector3 dir   = (pm.transform.position - attacker.transform.position).normalized;
+                dir.y         = 0.3f;
+                Vector3 force = dir.normalized * 14f;
+                pm.StateLaunched.SetForce(force, 0.8f);
+                pm.OnNetworkEvent(new RuneRush.Player.NetworkEvent
+                {
+                    Type           = RuneRush.Player.NetworkEventType.EffectApplied,
+                    Effect         = RuneRush.Player.EffectType.Launched,
+                    LaunchForce    = force,
+                    EffectDuration = 0.8f,
+                });
+            }
+            else
+            {
+                pm.OnNetworkEvent(new RuneRush.Player.NetworkEvent
+                {
+                    Type           = RuneRush.Player.NetworkEventType.EffectApplied,
+                    Effect         = RuneRush.Player.EffectType.Frogged,
+                    EffectDuration = 3f,
+                });
+            }
+        }
+        else if (_players.TryGetValue(targetId, out GameObject targetGo))
+        {
+            // Un rival fue golpeado — aplicar efecto visual en su representación remota
+            // sin necesitar que el servidor retransmita (funciona en la misma red local)
+            var rpc = targetGo.GetComponent<RuneRush.Player.RemotePlayerSync>();
+            if (rpc != null)
+            {
+                if (type == RuneRush.Player.PowerupVFX.VFXType.FrogSpell)
+                    rpc.ApplyFroggedVisual();
+                else if (_players.TryGetValue(attackerId, out GameObject attackerGo))
+                    rpc.ApplyLaunchedVisual(attackerGo.transform.position);
+            }
+        }
+
+        // Notificar al servidor para que informe al dispositivo del jugador golpeado
+        string powerupType = type == RuneRush.Player.PowerupVFX.VFXType.WindPush
+            ? "wind_hit" : "frog_hit";
+        GameClient.Instance?.SendPowerupActivate($"{powerupType}:{targetId}");
+    }
+
     // ── Botón portal (llamado desde el botón UI en HUD) ───────────────────────
     public void OnPortalButtonPressed()
     {
@@ -381,6 +634,16 @@ public class GameManager : MonoBehaviour
     }
 
     // ── Helpers de primitivas (fallback sin prefabs) ──────────────────────────
+    private static GameObject CreateDebugSphere(string name, Vector3 pos, Color color, float scale)
+    {
+        var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        go.transform.position   = pos;
+        go.transform.localScale = Vector3.one * scale;
+        go.name = name;
+        go.GetComponent<Renderer>().material.color = color;
+        return go;
+    }
+
     private static GameObject CreateCapsule(string name, Vector3 pos)
     {
         var go = GameObject.CreatePrimitive(PrimitiveType.Capsule);

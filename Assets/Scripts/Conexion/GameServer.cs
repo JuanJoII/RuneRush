@@ -37,21 +37,21 @@ public class GameServer : MonoBehaviour
     [SerializeField] private int defaultPort = 7777;
     [SerializeField] private int maxPlayers = 4;
     [SerializeField] private int minPlayers = 2;
-    [SerializeField] private float mapSize = 100f;
+    [SerializeField] private float mapSize = 300f;
     [SerializeField] private float gameDuration = 90f;
 
     [Header("Runas")]
-    [SerializeField] private int totalRunas = 30;
+    [SerializeField] private int totalRunas = 100;
 
     [Header("Power-up Viento (objeto en mapa)")]
     [SerializeField] private int totalVientoItems = 5;
     [SerializeField] private float vientoDuration = 5f;
 
     [Header("Meteoros")]
-    [SerializeField] private float meteorInterval = 15f;
+    [SerializeField] private float meteorInterval = 10f;
     [SerializeField] private float meteorFallDuration = 3f;
     [SerializeField] private float meteorRadius = 3.5f;
-    [SerializeField] private float meteorBlockDuration = 10f;
+    [SerializeField] private float meteorBlockDuration = 5f;
 
     [Header("Portal propio")]
     [SerializeField] private int portalUses = 2;

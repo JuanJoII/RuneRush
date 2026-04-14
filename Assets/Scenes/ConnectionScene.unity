@@ -2733,15 +2733,15 @@ MonoBehaviour:
   defaultPort: 7777
   maxPlayers: 4
   minPlayers: 2
-  mapSize: 100
+  mapSize: 300
   gameDuration: 90
-  totalRunas: 30
+  totalRunas: 50
   totalVientoItems: 5
   vientoDuration: 5
-  meteorInterval: 15
+  meteorInterval: 10
   meteorFallDuration: 3
   meteorRadius: 3.5
-  meteorBlockDuration: 10
+  meteorBlockDuration: 5
   portalUses: 2
 --- !u!114 &1120760760
 MonoBehaviour:

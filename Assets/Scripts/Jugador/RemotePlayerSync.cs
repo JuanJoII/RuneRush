@@ -3,42 +3,31 @@ using UnityEngine;
 namespace RuneRush.Player
 {
     /// <summary>
-    /// RemotePlayerSync — maneja la representación visual de un jugador remoto.
-    ///
-    /// Responsabilidades:
-    ///   - Interpolar suavemente hacia la última posición recibida del servidor.
-    ///   - Actualizar el Animator del jugador remoto con el estado recibido.
-    ///   - Reaccionar a eventos de power-up (teletransporte, hechizo) que llegan
-    ///     por broadcast desde GameClient.
-    ///
-    /// GameManager lo agrega al GameObject de cada jugador que NO es local.
-    ///
-    /// RIESGO P2P: si el host tiene lag, los player_move llegan con retraso
-    /// y el jugador remoto se ve "teletransportado" en saltos. El lerp
-    /// suaviza esto, pero si el retraso es muy alto (>200ms) se nota igual.
-    /// No hay mucho que hacer del lado cliente sin timestamps y buffer de estados.
+    /// RemotePlayerSync — representa visualmente a un jugador remoto.
+    /// El Rigidbody es kinematic — movemos con MovePosition para no pelear con la física.
     /// </summary>
     public class RemotePlayerSync : MonoBehaviour
     {
         public string PlayerId { get; set; } = "";
 
-        [SerializeField] private float _lerpSpeed = 12f;
+        [SerializeField] private float     _lerpSpeed    = 12f;
+        [SerializeField] private float     _groundOffset = 0f;
+        [SerializeField] private LayerMask _groundMask   = 1 << 6;
 
-        private Vector3   _targetPosition;
-        private Animator  _animator;
-        private bool      _hasTarget = false;
-
-        // Hashes — mismos que PlayerAnimator para consistencia
-        private static readonly int SpeedHash      = Animator.StringToHash("Speed");
-        private static readonly int IsFroggedHash  = Animator.StringToHash("IsFrogged");
-        private static readonly int IsLaunchedHash = Animator.StringToHash("IsLaunched");
-        private static readonly int TeleportHash   = Animator.StringToHash("Teleport");
-        private static readonly int CastSpellHash  = Animator.StringToHash("CastSpell");
+        private Rigidbody      _rb;
+        private PlayerAnimator _playerAnim;
+        private VFXController  _vfx;
+        private Vector3        _targetPosition;
+        private bool           _hasTarget  = false;
+        private bool           _wasBoosted = false;
+        private bool           _wasFrogged = false;
 
         private void Awake()
         {
-            _animator        = GetComponent<Animator>();
-            _targetPosition  = transform.position;
+            _rb             = GetComponent<Rigidbody>();
+            _playerAnim     = GetComponentInChildren<PlayerAnimator>(includeInactive: true);
+            _vfx            = GetComponentInChildren<VFXController>(includeInactive: true);
+            _targetPosition = transform.position;
         }
 
         private void OnEnable()
@@ -55,78 +44,138 @@ namespace RuneRush.Player
             GameClient.Instance.OnCollectConfirm.RemoveListener(OnCollectConfirm);
         }
 
-        private void Update()
+        private void FixedUpdate()
         {
             if (!_hasTarget) return;
 
-            // Interpolación suave hacia la última posición conocida
-            transform.position = Vector3.Lerp(
-                transform.position,
+            Vector3 next = Vector3.Lerp(
+                _rb ? _rb.position : transform.position,
                 _targetPosition,
-                _lerpSpeed * Time.deltaTime
+                _lerpSpeed * Time.fixedDeltaTime
             );
 
-            // Rotar hacia la dirección de movimiento
-            Vector3 delta = _targetPosition - transform.position;
-            if (delta.sqrMagnitude > 0.001f)
+            if (_rb) _rb.MovePosition(next);
+            else     transform.position = next;
+
+            Vector3 delta = _targetPosition - (_rb ? _rb.position : transform.position);
+            delta.y = 0f;
+            if (delta.sqrMagnitude > 0.01f)
             {
                 Quaternion targetRot = Quaternion.LookRotation(delta);
-                transform.rotation = Quaternion.Slerp(
-                    transform.rotation, targetRot, 12f * Time.deltaTime
-                );
+                if (_rb)
+                    _rb.MoveRotation(Quaternion.Slerp(_rb.rotation, targetRot, 10f * Time.fixedDeltaTime));
+                else
+                    transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, 10f * Time.fixedDeltaTime);
             }
         }
 
-        // ── API pública llamada por GameManager ───────────────────────────────
+        // ── Movimiento y animación ────────────────────────────────────────────
 
-        /// <summary>
-        /// Actualiza posición y estado de animación a partir del json de player_move.
-        /// Llamado desde GameManager.OnPlayerMove().
-        /// </summary>
         public void SetTargetFromMove(Vector3 position, string animState)
         {
-            _targetPosition = position;
-            _hasTarget = true;
+            _targetPosition = ResolveY(position);
+            _hasTarget      = true;
 
-            if (_animator == null) return;
-
-            // Mapear el campo "state" del json a parámetros del Animator
-            switch (animState)
+            float speed = animState switch
             {
-                case "idle":
-                    _animator.SetFloat(SpeedHash, 0f, 0.1f, Time.deltaTime);
-                    break;
-                case "moviendose":
-                    _animator.SetFloat(SpeedHash, 1f, 0.1f, Time.deltaTime);
-                    break;
-                case "boosted":
-                    _animator.SetFloat(SpeedHash, 2f, 0.1f, Time.deltaTime);
-                    break;
-                case "frogged":
-                    _animator.SetBool(IsFroggedHash, true);
-                    _animator.SetFloat(SpeedHash, 0.5f, 0.1f, Time.deltaTime);
-                    break;
-                case "launched":
-                    _animator.SetBool(IsLaunchedHash, true);
-                    break;
-                default:
-                    _animator.SetFloat(SpeedHash, 0f, 0.1f, Time.deltaTime);
-                    break;
+                "moviendose" => 1f,
+                "boosted"    => 2f,
+                "frogged"    => 0.5f,
+                _            => 0f
+            };
+            _playerAnim?.SetSpeedManual(speed);
+
+            // Trail de boost
+            bool isBoosted = animState == "boosted";
+            if (isBoosted != _wasBoosted)
+            {
+                _wasBoosted = isBoosted;
+                _vfx?.SetBoostTrail(isBoosted);
             }
 
-            // Limpiar efectos cuando vuelve a moverse normal
-            if (animState == "moviendose" || animState == "idle")
+            // Modelo de rana
+            bool isFrogged = animState == "frogged";
+            if (isFrogged != _wasFrogged)
             {
-                _animator.SetBool(IsFroggedHash,  false);
-                _animator.SetBool(IsLaunchedHash, false);
+                _wasFrogged = isFrogged;
+                if (isFrogged) _vfx?.PlayEffect("frogged");
+                else           _vfx?.StopEffect("frogged");
             }
         }
 
-        /// <summary>Teletransporte instantáneo (sin lerp).</summary>
+        /// <summary>Teletransporte instantáneo — sin lerp.</summary>
         public void SetTarget(Vector3 position)
         {
-            _targetPosition  = position;
-            _hasTarget       = true;
+            _targetPosition = ResolveY(position);
+            _hasTarget      = true;
+
+            if (_rb) _rb.MovePosition(_targetPosition);
+            else     transform.position = _targetPosition;
+        }
+
+        // ── Efectos aplicados por power-ups ──────────────────────────────────
+
+        /// <summary>
+        /// Aplica visualmente el estado frogged en la pantalla del atacante.
+        /// El jugador golpeado recibe su propio efecto via OnPowerupHitReceived.
+        /// </summary>
+        public void ApplyFroggedVisual()
+        {
+            if (_wasFrogged) return;
+            _wasFrogged = true;
+            _vfx?.PlayEffect("frogged");
+            Invoke(nameof(RevertFroggedVisual), 3f);
+        }
+
+        private void RevertFroggedVisual()
+        {
+            _wasFrogged = false;
+            _vfx?.StopEffect("frogged");
+        }
+
+        /// <summary>
+        /// Aplica el visual de impulso en la pantalla del atacante.
+        /// Mueve el target en dirección opuesta para que se vea el desplazamiento.
+        /// </summary>
+        public void ApplyLaunchedVisual(Vector3 attackerPos)
+        {
+            Vector3 dir = (transform.position - attackerPos).normalized;
+            dir.y = 0.3f;
+            // Desplazar el target para que el lerp simule el impulso visualmente
+            _targetPosition += dir.normalized * 5f;
+        }
+
+        // ── Resolución de Y ───────────────────────────────────────────────────
+
+        private Vector3 ResolveY(Vector3 position)
+        {
+            if (TryRaycast(position.x, position.z, out float y))
+                return new Vector3(position.x, y + _groundOffset, position.z);
+
+            float[] dists  = { 1f, 2f, 3f, 4f, 5f };
+            Vector2[] dirs = {
+                Vector2.right, Vector2.left, Vector2.up, Vector2.down,
+                new Vector2(1,1).normalized,  new Vector2(-1,1).normalized,
+                new Vector2(1,-1).normalized, new Vector2(-1,-1).normalized
+            };
+            foreach (float d in dists)
+                foreach (Vector2 dir in dirs)
+                    if (TryRaycast(position.x + dir.x * d, position.z + dir.y * d, out y))
+                        return new Vector3(position.x, y + _groundOffset, position.z);
+
+            return position;
+        }
+
+        private bool TryRaycast(float x, float z, out float groundY)
+        {
+            if (Physics.Raycast(new Vector3(x, 200f, z), Vector3.down,
+                                out RaycastHit hit, 400f, _groundMask))
+            {
+                groundY = hit.point.y;
+                return true;
+            }
+            groundY = 0f;
+            return false;
         }
 
         // ── Eventos de broadcast ──────────────────────────────────────────────
@@ -135,20 +184,13 @@ namespace RuneRush.Player
         {
             string pid         = GameServer.ExtractString(json, "playerId");
             string powerupType = GameServer.ExtractString(json, "powerupType");
-
             if (pid != PlayerId) return;
 
             if (powerupType == "portal_propio")
             {
-                float destX = GameServer.ExtractFloatInObject(json, "destinationPosition", "x");
-                float destZ = GameServer.ExtractFloatInObject(json, "destinationPosition", "z");
-
-                // Teletransporte instantáneo — sin lerp para el jugador remoto
-                Vector3 dest = new Vector3(destX, 1f, destZ);
-                transform.position = dest;
-                _targetPosition    = dest;
-
-                _animator?.SetTrigger(TeleportHash);
+                float dx = GameServer.ExtractFloatInObject(json, "destinationPosition", "x");
+                float dz = GameServer.ExtractFloatInObject(json, "destinationPosition", "z");
+                SetTarget(new Vector3(dx, 1f, dz));
             }
         }
 
@@ -156,12 +198,10 @@ namespace RuneRush.Player
         {
             string pid        = GameServer.ExtractString(json, "playerId");
             string objectType = GameServer.ExtractString(json, "objectType");
-
             if (pid != PlayerId) return;
 
-            // Animación de hechizo al recoger power-up
             if (objectType == "powerup_viento")
-                _animator?.SetTrigger(CastSpellHash);
+                _playerAnim?.TriggerSpellWind();
         }
     }
 }
