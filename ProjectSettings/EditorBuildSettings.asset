@@ -7,10 +7,7 @@ EditorBuildSettings:
   m_Scenes:
   - enabled: 1
     path: Assets/Scenes/ConnectionScene.unity
-    guid: 99c9720ab356a0642a771bea13969a05
-  - enabled: 0
-    path: Assets/Scenes/GameSceneJuanjo.unity
-    guid: 8c167cb4a5727bc4db5c57771e484d71
+    guid: abbf4f0e77514524dbe3d23ffcc0187f
   - enabled: 1
     path: Assets/Scenes/GameScene.unity
     guid: b369dfc9fbaf33a4bb01b5ad5cec4ff4

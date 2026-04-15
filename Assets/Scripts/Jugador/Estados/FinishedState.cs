@@ -12,9 +12,6 @@ namespace RuneRush.Player
             // Detener movimiento y desactivar física
             Rb.linearVelocity = Vector3.zero;
             Rb.isKinematic    = true;
-
-            // Detener todos los VFX activos
-            Controller.VFX?.StopAllEffects();
         }
 
         public override void Update()

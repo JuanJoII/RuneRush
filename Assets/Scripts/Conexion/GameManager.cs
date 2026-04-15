@@ -33,7 +33,7 @@ public class GameManager : MonoBehaviour
     // ── Managers ──────────────────────────────────────────────────────────────
     [Header("Referencias")]
     [SerializeField] private HUDManager   hudManager;
-    [SerializeField] private VFXController vfxController; // gestiona meteoros y zonas
+    [SerializeField] private GlobalVFXController vfxController; // gestiona meteoros y zonas // gestiona meteoros y zonas
 
     // ── Estado ────────────────────────────────────────────────────────────────
     private readonly Dictionary<string, GameObject> _players  = new();
@@ -315,7 +315,7 @@ public class GameManager : MonoBehaviour
     private void SpawnObject(string id, float x, float z, string objectType)
     {
         // Los coleccionables flotan ligeramente sobre el suelo (0.5f de offset)
-        float groundY = SnapToGroundY(x, z, fallbackY: 0.5f, pivotOffset: 5f);
+        float groundY = SnapToGroundY(x, z, fallbackY: 0.5f, pivotOffset: 7f);
 
         GameObject go = objectType == "powerup_viento"
             ? (powerupPrefab
@@ -345,12 +345,78 @@ public class GameManager : MonoBehaviour
         float  z         = GameServer.ExtractFloatInObject(json, "position", "z");
         string animState = GameServer.ExtractString(json, "state");
 
+        // ── Interceptar mensajes de efecto codificados en el state ────────────
+        // El atacante envía player_move con state="wind_hit:PB" o "frog_hit:PB".
+        // El servidor lo hace broadcast a todos — incluyendo al jugador golpeado.
+        if (animState.StartsWith("wind_hit:") || animState.StartsWith("frog_hit:"))
+        {
+            bool isWind    = animState.StartsWith("wind_hit:");
+            string targetId = animState.Substring(animState.IndexOf(':') + 1);
+            var vfxType = isWind
+                ? RuneRush.Player.PowerupVFX.VFXType.WindPush
+                : RuneRush.Player.PowerupVFX.VFXType.FrogSpell;
+
+            ApplyEffectFromMessage(vfxType, pid, targetId, new Vector3(x, 1f, z));
+            return; // no procesar como movimiento normal
+        }
+
         if (pid == _localId) return;
 
         if (_players.TryGetValue(pid, out GameObject go))
         {
             var rpc = go.GetComponent<RemotePlayerSync>();
             if (rpc) rpc.SetTargetFromMove(new Vector3(x, 1f, z), animState);
+        }
+    }
+
+    /// <summary>
+    /// Aplica el efecto de power-up recibido via player_move.
+    /// Si el targetId es el jugador local, aplica el estado físico real.
+    /// Si es un remoto, aplica solo el visual.
+    /// </summary>
+    private void ApplyEffectFromMessage(RuneRush.Player.PowerupVFX.VFXType type,
+                                         string attackerId, string targetId,
+                                         Vector3 attackerPos)
+    {
+        if (targetId == _localId)
+        {
+            var pm = _localPlayer ? _localPlayer.GetComponent<RuneRush.Player.PlayerManager>() : null;
+            if (pm == null) return;
+
+            if (type == RuneRush.Player.PowerupVFX.VFXType.WindPush)
+            {
+                Vector3 dir   = (pm.transform.position - attackerPos).normalized;
+                dir.y         = 0.3f;
+                Vector3 force = dir.normalized * 14f;
+                pm.StateLaunched.SetForce(force, 0.8f);
+                pm.OnNetworkEvent(new RuneRush.Player.NetworkEvent
+                {
+                    Type           = RuneRush.Player.NetworkEventType.EffectApplied,
+                    Effect         = RuneRush.Player.EffectType.Launched,
+                    LaunchForce    = force,
+                    EffectDuration = 0.8f,
+                });
+            }
+            else
+            {
+                pm.OnNetworkEvent(new RuneRush.Player.NetworkEvent
+                {
+                    Type           = RuneRush.Player.NetworkEventType.EffectApplied,
+                    Effect         = RuneRush.Player.EffectType.Frogged,
+                    EffectDuration = 3f,
+                });
+            }
+        }
+        else if (_players.TryGetValue(targetId, out GameObject targetGo))
+        {
+            var rpc = targetGo.GetComponent<RuneRush.Player.RemotePlayerSync>();
+            if (rpc != null)
+            {
+                if (type == RuneRush.Player.PowerupVFX.VFXType.FrogSpell)
+                    rpc.ApplyFroggedVisual();
+                else
+                    rpc.ApplyLaunchedVisual(attackerPos);
+            }
         }
     }
 
@@ -381,7 +447,7 @@ public class GameManager : MonoBehaviour
             if (pm != null)
             {
                 // Asignar power-up aleatorio — el jugador lo activa cuando quiera
-                string[] available = { "powerup_viento", "portal_propio" };
+                string[] available = { "powerup_viento", "powerup_impulso", "powerup_rana" };
                 string chosen = available[UnityEngine.Random.Range(0, available.Length)];
                 pm.SetPowerupReady(chosen, true);
             }
@@ -491,7 +557,7 @@ public class GameManager : MonoBehaviour
 
             // Fuerza proporcional a la cercanía — más cerca = más fuerte
             float proximity  = 1f - (distToPlayer / radius); // 0..1
-            float forceMag   = Mathf.Lerp(100f, 180f, proximity);
+            float forceMag   = Mathf.Lerp(100f, 150f, proximity);
             Vector3 force    = (dir + Vector3.up * 0.4f).normalized * forceMag;
 
             pm.OnNetworkEvent(new RuneRush.Player.NetworkEvent
@@ -571,60 +637,37 @@ public class GameManager : MonoBehaviour
         else    pm.transform.position = dest;
 
         pm.VFX?.PlayEffect("teleport_out");
+
+        // Activar cooldown en el portal de destino para que el jugador
+        // que acaba de llegar no sea teletransportado de vuelta inmediatamente
+        foreach (var portal in UnityEngine.Object.FindObjectsByType<PortalObject>(
+                     UnityEngine.FindObjectsSortMode.None))
+        {
+            if (portal.PortalId == pairId)
+            {
+                portal.StartCooldown();
+                break;
+            }
+        }
     }
 
     public void OnPowerupVFXHit(RuneRush.Player.PowerupVFX.VFXType type,
                                   string attackerId, string targetId)
     {
-        if (targetId == _localId)
-        {
-            // El jugador local fue golpeado — aplicar estado directamente
-            var pm = _localPlayer ? _localPlayer.GetComponent<RuneRush.Player.PlayerManager>() : null;
-            if (pm == null) return;
+        // Obtener posición del atacante para calcular dirección del impulso
+        Vector3 attackerPos = _localPlayer ? _localPlayer.transform.position : Vector3.zero;
 
-            if (type == RuneRush.Player.PowerupVFX.VFXType.WindPush)
-            {
-                if (!_players.TryGetValue(attackerId, out GameObject attacker)) return;
-                Vector3 dir   = (pm.transform.position - attacker.transform.position).normalized;
-                dir.y         = 0.3f;
-                Vector3 force = dir.normalized * 14f;
-                pm.StateLaunched.SetForce(force, 0.8f);
-                pm.OnNetworkEvent(new RuneRush.Player.NetworkEvent
-                {
-                    Type           = RuneRush.Player.NetworkEventType.EffectApplied,
-                    Effect         = RuneRush.Player.EffectType.Launched,
-                    LaunchForce    = force,
-                    EffectDuration = 0.8f,
-                });
-            }
-            else
-            {
-                pm.OnNetworkEvent(new RuneRush.Player.NetworkEvent
-                {
-                    Type           = RuneRush.Player.NetworkEventType.EffectApplied,
-                    Effect         = RuneRush.Player.EffectType.Frogged,
-                    EffectDuration = 3f,
-                });
-            }
-        }
-        else if (_players.TryGetValue(targetId, out GameObject targetGo))
-        {
-            // Un rival fue golpeado — aplicar efecto visual en su representación remota
-            // sin necesitar que el servidor retransmita (funciona en la misma red local)
-            var rpc = targetGo.GetComponent<RuneRush.Player.RemotePlayerSync>();
-            if (rpc != null)
-            {
-                if (type == RuneRush.Player.PowerupVFX.VFXType.FrogSpell)
-                    rpc.ApplyFroggedVisual();
-                else if (_players.TryGetValue(attackerId, out GameObject attackerGo))
-                    rpc.ApplyLaunchedVisual(attackerGo.transform.position);
-            }
-        }
+        // Aplicar en la representación local del objetivo (pantalla del atacante)
+        ApplyEffectFromMessage(type, attackerId, targetId, attackerPos);
 
-        // Notificar al servidor para que informe al dispositivo del jugador golpeado
-        string powerupType = type == RuneRush.Player.PowerupVFX.VFXType.WindPush
-            ? "wind_hit" : "frog_hit";
-        GameClient.Instance?.SendPowerupActivate($"{powerupType}:{targetId}");
+        // Notificar al resto de clientes usando player_move como canal.
+        // El servidor hace broadcast de player_move a todos — incluyendo al
+        // jugador golpeado, que aplicará el efecto físico al recibirlo.
+        string stateCode = type == RuneRush.Player.PowerupVFX.VFXType.WindPush
+            ? $"wind_hit:{targetId}"
+            : $"frog_hit:{targetId}";
+
+        GameClient.Instance?.SendMove(attackerPos.x, attackerPos.z, stateCode);
     }
 
     // ── Botón portal (llamado desde el botón UI en HUD) ───────────────────────

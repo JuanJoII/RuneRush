@@ -12,7 +12,6 @@ namespace RuneRush.Player
         public override void Enter()
         {
             _timer = 0f;
-            Controller.VFX?.PlayEffect("frogged");
             Controller.HUD?.ShowEffectIcon("frog");
             // El modelo del jugador cambia a rana (VFXController lo maneja)
         }
@@ -35,7 +34,7 @@ namespace RuneRush.Player
             Vector3 dir = (fwd * input.y + right * input.x).normalized;
 
             Vector3 velocity = dir * Data.FroggedSpeed;
-            velocity.y = Rb.linearVelocity.y;
+            velocity.y = SafeYVelocity;
             Rb.linearVelocity = velocity;
 
             Quaternion targetRot = Quaternion.LookRotation(dir);
@@ -47,7 +46,6 @@ namespace RuneRush.Player
         public override void Exit()
         {
             _timer = 0f;
-            Controller.VFX?.StopEffect("frogged");
             Controller.HUD?.HideEffectIcon("frog");
             // VFXController restaura el modelo original del jugador
         }

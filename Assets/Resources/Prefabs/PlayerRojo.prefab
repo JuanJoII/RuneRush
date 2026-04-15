@@ -2408,6 +2408,7 @@ GameObject:
   - component: {fileID: 7656455501409783361}
   - component: {fileID: 7978098148864455121}
   - component: {fileID: 4713923757858146628}
+  - component: {fileID: 1282501512820133812}
   m_Layer: 0
   m_Name: PlayerRojo
   m_TagString: Player
@@ -2480,12 +2481,13 @@ MonoBehaviour:
     FrogDuration: 3
     CollectTimeout: 2
     LaunchDrag: 0
-  _vfx: {fileID: 0}
   _hud: {fileID: 0}
   _playerAnimator: {fileID: 7978098148864455121}
-  _windPushDuration: 1.5
-  _frogSpellDuration: 1.5
-  _windPushDistance: 2
+  _vfx: {fileID: 0}
+  _vfxGlobal: {fileID: 0}
+  _windPushDuration: 3
+  _frogSpellDuration: 3
+  _windPushDistance: 8
 --- !u!114 &7656455501409783361
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2537,6 +2539,21 @@ CapsuleCollider:
   m_Height: 0.1
   m_Direction: 1
   m_Center: {x: 0, y: 0.05, z: 0}
+--- !u!114 &1282501512820133812
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7755590233781702955}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fa1c4a96b2d42df4a853c7e2a98a9712, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::RuneRush.Player.PlayerVFXController
+  _normalModel: {fileID: 8980557039984604599}
+  _frogModel: {fileID: 262037025418017403}
+  _boostTrail: {fileID: 6293039471250523914}
 --- !u!1 &8059757049472936158
 GameObject:
   m_ObjectHideFlags: 0

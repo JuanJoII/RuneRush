@@ -2542,6 +2542,7 @@ GameObject:
   - component: {fileID: 7579753659944289616}
   - component: {fileID: 8766429103504865013}
   - component: {fileID: 6584252994365481416}
+  - component: {fileID: 8583251276845568550}
   m_Layer: 0
   m_Name: PlayerMorado
   m_TagString: Player
@@ -2614,12 +2615,13 @@ MonoBehaviour:
     FrogDuration: 3
     CollectTimeout: 2
     LaunchDrag: 0
-  _vfx: {fileID: 0}
   _hud: {fileID: 0}
   _playerAnimator: {fileID: 8766429103504865013}
-  _windPushDuration: 1.5
-  _frogSpellDuration: 1.5
-  _windPushDistance: 2
+  _vfx: {fileID: 0}
+  _vfxGlobal: {fileID: 0}
+  _windPushDuration: 3
+  _frogSpellDuration: 3
+  _windPushDistance: 8
 --- !u!114 &7579753659944289616
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2671,6 +2673,21 @@ CapsuleCollider:
   m_Height: 0.1
   m_Direction: 1
   m_Center: {x: 0, y: 0.05, z: 0}
+--- !u!114 &8583251276845568550
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7149856042010375350}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fa1c4a96b2d42df4a853c7e2a98a9712, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::RuneRush.Player.PlayerVFXController
+  _normalModel: {fileID: 1515380015161081939}
+  _frogModel: {fileID: 3958513647194130049}
+  _boostTrail: {fileID: 5044970447410037965}
 --- !u!1 &7212088752964295962
 GameObject:
   m_ObjectHideFlags: 0

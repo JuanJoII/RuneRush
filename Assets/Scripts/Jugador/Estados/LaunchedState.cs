@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace RuneRush.Player
 {
-     // ══════════════════════════════════════════════════════════════════════════
+   // ══════════════════════════════════════════════════════════════════════════
     // LAUNCHED — impulsado por viento rival o por impacto de meteoro
     //
     // El servidor envía dirección y magnitud del impulso.
@@ -33,8 +33,7 @@ namespace RuneRush.Player
             // Aplicar impulso inicial
             Rb.linearVelocity = Vector3.zero;
             Rb.AddForce(_force, ForceMode.VelocityChange);
- 
-            Controller.VFX?.PlayEffect("launched");
+            
             Controller.HUD?.ShowEffectIcon("launched");
         }
  
@@ -56,7 +55,6 @@ namespace RuneRush.Player
         {
             _timer = 0f;
             Rb.linearDamping = _originalDrag;
-            Controller.VFX?.StopEffect("launched");
             Controller.HUD?.HideEffectIcon("launched");
         }
  
@@ -74,3 +72,4 @@ namespace RuneRush.Player
         }
     }
 }
+

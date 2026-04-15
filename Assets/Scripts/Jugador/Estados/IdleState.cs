@@ -11,7 +11,6 @@ namespace RuneRush.Player
         {
             // Detener cualquier velocidad residual
             Rb.linearVelocity = new Vector3(0f, Rb.linearVelocity.y, 0f);
-            Controller.VFX?.StopEffect("move");
         }
 
         public override void Update()

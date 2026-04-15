@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace RuneRush.Player
 {
-  // ══════════════════════════════════════════════════════════════════════════
+ // ══════════════════════════════════════════════════════════════════════════
     // TELEPORTING — power-up de portal propio
     //
     // El servidor confirma la posición de destino antes de mover al jugador.
@@ -22,7 +22,6 @@ namespace RuneRush.Player
  
         public override void Enter()
         {
-            Controller.VFX?.PlayEffect("teleport_out");
             // Detener movimiento mientras se ejecuta la animación de salida
             Rb.linearVelocity = new Vector3(0f, Rb.linearVelocity.y, 0f);
         }
@@ -43,7 +42,6 @@ namespace RuneRush.Player
  
             // Teletransportar físicamente al jugador
             Rb.MovePosition(_target);
-            Controller.VFX?.PlayEffect("teleport_in");
  
             ReturnToMovementState();
         }
@@ -66,3 +64,4 @@ namespace RuneRush.Player
         }
     }
 }
+

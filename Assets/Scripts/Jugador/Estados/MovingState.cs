@@ -2,14 +2,13 @@ using UnityEngine;
 
 namespace RuneRush.Player
 {
-    // ══════════════════════════════════════════════════════════════════════════
+   // ══════════════════════════════════════════════════════════════════════════
     // MOVING — jugador desplazándose con el joystick
     // ══════════════════════════════════════════════════════════════════════════
     public class MovingState : PlayerState
     {
         public override void Enter()
         {
-            Controller.VFX?.PlayEffect("move");
         }
  
         public override void Update()
@@ -38,7 +37,7 @@ namespace RuneRush.Player
             Vector3 moveDir = (forward * input.y + right * input.x).normalized;
  
             Vector3 velocity = moveDir * Data.MoveSpeed;
-            velocity.y       = Rb.linearVelocity.y; // conservar gravedad
+            velocity.y       = SafeYVelocity; // conservar gravedad
             Rb.linearVelocity = velocity;
  
             // Rotar el personaje hacia la dirección de movimiento
@@ -51,7 +50,6 @@ namespace RuneRush.Player
  
         public override void Exit()
         {
-            Controller.VFX?.StopEffect("move");
             GameClient.Instance?.SendMove(Rb.position.x, Rb.position.z, "idle");
         }
  
@@ -61,3 +59,4 @@ namespace RuneRush.Player
         }
     }
 }
+ 

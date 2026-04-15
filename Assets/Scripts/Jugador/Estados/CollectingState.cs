@@ -58,7 +58,7 @@ namespace RuneRush.Player
             Vector3 dir   = (fwd * input.y + right * input.x).normalized;
 
             Vector3 velocity = dir * Data.MoveSpeed;
-            velocity.y       = Rb.linearVelocity.y;
+            velocity.y       = SafeYVelocity;
             Rb.linearVelocity = velocity;
         }
 
@@ -77,7 +77,6 @@ namespace RuneRush.Player
                     {
                         // VFX de recolección — el puntaje lo actualiza GameManager
                         // cuando procesa el collect_confirm del servidor con newScore.
-                        Controller.VFX?.PlayEffect("collect");
                         ReturnToMovementState();
                     }
                     break;

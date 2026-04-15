@@ -34,7 +34,7 @@ namespace RuneRush.Player
             Vector3 dir = (fwd * input.y + right * input.x).normalized;
 
             Vector3 velocity = dir * Data.BoostedSpeed;
-            velocity.y = Rb.linearVelocity.y;
+            velocity.y = SafeYVelocity;
             Rb.linearVelocity = velocity;
 
             Quaternion targetRot = Quaternion.LookRotation(dir);

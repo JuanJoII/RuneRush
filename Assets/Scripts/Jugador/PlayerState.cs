@@ -2,39 +2,43 @@ using UnityEngine;
 
 namespace RuneRush.Player
 {
-    /// <summary>
-    /// Clase base abstracta para todos los estados del jugador.
-    /// Cada estado concreto implementa su propia lógica de entrada,
-    /// actualización y salida.
-    /// </summary>
     public abstract class PlayerState
     {
-        // Referencia al controller central — todos los estados la necesitan
         protected PlayerManager Controller { get; private set; }
-        protected Rigidbody           Rb        => Controller.Rb;
-        protected PlayerData          Data      => Controller.Data;
+        protected Rigidbody        Rb         => Controller.Rb;
+        protected PlayerData       Data       => Controller.Data;
 
-        public void Init(PlayerManager controller)
-        {
-            Controller = controller;
-        }
-
-        /// <summary>Llamado una vez al entrar al estado.</summary>
-        public abstract void Enter();
-
-        /// <summary>Llamado en Update() mientras el estado está activo.</summary>
-        public abstract void Update();
-
-        /// <summary>Llamado en FixedUpdate() mientras el estado está activo.</summary>
-        public virtual void FixedUpdate() { }
-
-        /// <summary>Llamado una vez al salir del estado.</summary>
-        public abstract void Exit();
+        // Capa Ground — coincide con LayerMask 1 << 6
+        private static readonly int GroundLayer = 1 << 6;
 
         /// <summary>
-        /// Punto de entrada para eventos de red que llegan del servidor.
-        /// Los estados que necesiten reaccionar a mensajes de red sobreescriben este método.
+        /// True si el jugador tiene el suelo cerca debajo.
+        /// Raycast corto desde el centro del Rigidbody hacia abajo.
         /// </summary>
-        public virtual void OnNetworkEvent(NetworkEvent evt) { }
+        protected bool IsGrounded =>
+            Physics.Raycast(Rb.position, Vector3.down, 0.9f, GroundLayer);
+
+        /// <summary>
+        /// Devuelve la velocidad Y segura: si el jugador está en el suelo
+        /// y hay un impulso positivo (depenetración de escalón), lo zeroeamos.
+        /// Esto evita que el personaje "vuele" al subir bordes.
+        /// </summary>
+        protected float SafeYVelocity
+        {
+            get
+            {
+                float y = Rb.linearVelocity.y;
+                if (y > 0.5f && IsGrounded) return 0f;
+                return y;
+            }
+        }
+
+        public void Init(PlayerManager controller) => Controller = controller;
+
+        public abstract void Enter();
+        public abstract void Update();
+        public virtual  void FixedUpdate() { }
+        public abstract void Exit();
+        public virtual  void OnNetworkEvent(NetworkEvent evt) { }
     }
 }

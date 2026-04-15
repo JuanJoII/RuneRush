@@ -17,8 +17,13 @@ public class RunaObject : MonoBehaviour
     private void Start()
     {
         _basePos           = transform.position;
-        _baseRotation      = Quaternion.Euler(-90f, 0f, 0f);
-        transform.rotation = _baseRotation;
+
+        if (ObjectType == "runa_comun")
+        {
+            _baseRotation      = Quaternion.Euler(-90f, 0f, 0f);
+            transform.rotation = _baseRotation;
+        }
+
 
         var col = GetComponent<Collider>();
         if (col) col.isTrigger = true;

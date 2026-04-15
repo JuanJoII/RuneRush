@@ -25,7 +25,7 @@ namespace RuneRush.Player
 
         [HideInInspector] public VFXType    Type;
         [HideInInspector] public string     AttackerId; // PlayerId del jugador que lo lanzó
-        [HideInInspector] public float      Duration = 1.5f;
+        [HideInInspector] public float      Duration = 3f;
 
         private float _timer = 0f;
 

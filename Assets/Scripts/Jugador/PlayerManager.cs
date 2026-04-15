@@ -22,16 +22,18 @@ namespace RuneRush.Player
         [SerializeField] private PlayerData _data = new();
 
         [Header("Referencias")]
-        [SerializeField] private VFXController  _vfx;
-        [SerializeField] private HUDManager     _hud;
-        [SerializeField] private PlayerAnimator _playerAnimator;
+        [SerializeField] private HUDManager        _hud;
+        [SerializeField] private PlayerAnimator    _playerAnimator;
+        [SerializeField] private GlobalVFXController _globalVFX; // para spawn de VFX de hechizo
+
+        private PlayerVFXController _vfx; // encontrado automáticamente en Awake
 
         // ── Propiedades públicas para los estados ─────────────────────────────
-        public Rigidbody     Rb           { get; private set; }
-        public PlayerData    Data         => _data;
-        public VFXController VFX          => _vfx;
-        public HUDManager    HUD          => _hud;
-        public PlayerAnimator Anim        => _playerAnimator;
+        public Rigidbody            Rb        { get; private set; }
+        public PlayerData           Data      => _data;
+        public PlayerVFXController  VFX       => _vfx;
+        public HUDManager           HUD       => _hud;
+        public PlayerAnimator       Anim      => _playerAnimator;
 
         // Estado activo actual — PlayerAnimator lo lee en Update
         public PlayerState CurrentState   { get; private set; }
@@ -68,6 +70,14 @@ namespace RuneRush.Player
         private void Awake()
         {
             Rb = GetComponent<Rigidbody>();
+
+            // Buscar PlayerVFXController y PlayerAnimator en los hijos automáticamente
+            if (_vfx == null)
+                _vfx = GetComponentInChildren<PlayerVFXController>(includeInactive: true);
+            if (_globalVFX == null)
+                _globalVFX = GameObject.FindGameObjectWithTag("GameController").GetComponent<GlobalVFXController>();
+            if (_playerAnimator == null)
+                _playerAnimator = GetComponentInChildren<PlayerAnimator>(includeInactive: true);
 
             // Instanciar e inicializar todos los estados
             StateIdle        = new IdleState();
@@ -196,18 +206,22 @@ namespace RuneRush.Player
             {
                 case "powerup_viento":
                     ApplySpeedBoost(Data.BoostDuration);
-                    Anim?.TriggerSpellWind();
+                    // BoostedState.Enter() activa el trail automáticamente
                     SetPowerupReady("", false);
                     break;
 
                 case "powerup_impulso":
                     Anim?.TriggerSpellWind();
+                    // Avisar a los demás que está lanzando hechizo de viento
+                    GameClient.Instance?.SendMove(Rb.position.x, Rb.position.z, "casting_wind");
                     SpawnPowerupVFX(PowerupVFX.VFXType.WindPush, _windPushDuration);
                     SetPowerupReady("", false);
                     break;
 
                 case "powerup_rana":
                     Anim?.TriggerSpellFrog();
+                    // Avisar a los demás que está lanzando hechizo de rana
+                    GameClient.Instance?.SendMove(Rb.position.x, Rb.position.z, "casting_frog");
                     SpawnPowerupVFX(PowerupVFX.VFXType.FrogSpell, _frogSpellDuration);
                     SetPowerupReady("", false);
                     break;
@@ -220,16 +234,23 @@ namespace RuneRush.Player
 
         private void SpawnPowerupVFX(PowerupVFX.VFXType type, float duration)
         {
-            if (VFX == null) return;
+            // Usar GlobalVFXController si está asignado, si no buscarlo en escena
+            GlobalVFXController global = _globalVFX
+                ?? Object.FindFirstObjectByType<GlobalVFXController>();
 
-            // Spawnear frente al jugador a _windPushDistance unidades
+            if (global == null)
+            {
+                Debug.LogWarning("[PlayerController] No se encontró GlobalVFXController en escena.");
+                return;
+            }
+
             Vector3    spawnPos = Rb.position + transform.forward * _windPushDistance;
-            Quaternion spawnRot = transform.rotation;
+            Quaternion spawnRot = Quaternion.identity; // sin rotación — el collider es esférico
 
             if (type == PowerupVFX.VFXType.WindPush)
-                VFX.SpawnWindPushVFX(spawnPos, spawnRot, PlayerId, duration);
+                global.SpawnWindPushVFX(spawnPos, spawnRot, PlayerId, duration);
             else
-                VFX.SpawnFrogSpellVFX(spawnPos, spawnRot, PlayerId, duration);
+                global.SpawnFrogSpellVFX(spawnPos, spawnRot, PlayerId, duration);
         }
 
         // ── API power-up ──────────────────────────────────────────────────────

@@ -2,10 +2,6 @@ using UnityEngine;
 
 namespace RuneRush.Player
 {
-    /// <summary>
-    /// RemotePlayerSync — representa visualmente a un jugador remoto.
-    /// El Rigidbody es kinematic — movemos con MovePosition para no pelear con la física.
-    /// </summary>
     public class RemotePlayerSync : MonoBehaviour
     {
         public string PlayerId { get; set; } = "";
@@ -14,19 +10,19 @@ namespace RuneRush.Player
         [SerializeField] private float     _groundOffset = 0f;
         [SerializeField] private LayerMask _groundMask   = 1 << 6;
 
-        private Rigidbody      _rb;
-        private PlayerAnimator _playerAnim;
-        private VFXController  _vfx;
-        private Vector3        _targetPosition;
-        private bool           _hasTarget  = false;
-        private bool           _wasBoosted = false;
-        private bool           _wasFrogged = false;
+        private Rigidbody           _rb;
+        private PlayerAnimator      _playerAnim;
+        private PlayerVFXController _vfx;
+        private Vector3             _targetPosition;
+        private bool                _hasTarget  = false;
+        private bool                _wasBoosted = false;
+        private bool                _wasFrogged = false;
 
         private void Awake()
         {
             _rb             = GetComponent<Rigidbody>();
             _playerAnim     = GetComponentInChildren<PlayerAnimator>(includeInactive: true);
-            _vfx            = GetComponentInChildren<VFXController>(includeInactive: true);
+            _vfx            = GetComponentInChildren<PlayerVFXController>(includeInactive: true);
             _targetPosition = transform.position;
         }
 
@@ -69,13 +65,26 @@ namespace RuneRush.Player
             }
         }
 
-        // ── Movimiento y animación ────────────────────────────────────────────
+        // ── Movimiento y estado visual ────────────────────────────────────────
 
         public void SetTargetFromMove(Vector3 position, string animState)
         {
             _targetPosition = ResolveY(position);
             _hasTarget      = true;
 
+            // Animaciones de hechizo — no afectan locomotión
+            if (animState == "casting_wind")
+            {
+                _playerAnim?.TriggerSpellWind();
+                return;
+            }
+            if (animState == "casting_frog")
+            {
+                _playerAnim?.TriggerSpellFrog();
+                return;
+            }
+
+            // Locomotión normal
             float speed = animState switch
             {
                 "moviendose" => 1f,
@@ -113,12 +122,8 @@ namespace RuneRush.Player
             else     transform.position = _targetPosition;
         }
 
-        // ── Efectos aplicados por power-ups ──────────────────────────────────
+        // ── Efectos de power-up ───────────────────────────────────────────────
 
-        /// <summary>
-        /// Aplica visualmente el estado frogged en la pantalla del atacante.
-        /// El jugador golpeado recibe su propio efecto via OnPowerupHitReceived.
-        /// </summary>
         public void ApplyFroggedVisual()
         {
             if (_wasFrogged) return;
@@ -133,15 +138,10 @@ namespace RuneRush.Player
             _vfx?.StopEffect("frogged");
         }
 
-        /// <summary>
-        /// Aplica el visual de impulso en la pantalla del atacante.
-        /// Mueve el target en dirección opuesta para que se vea el desplazamiento.
-        /// </summary>
         public void ApplyLaunchedVisual(Vector3 attackerPos)
         {
             Vector3 dir = (transform.position - attackerPos).normalized;
             dir.y = 0.3f;
-            // Desplazar el target para que el lerp simule el impulso visualmente
             _targetPosition += dir.normalized * 5f;
         }
 
